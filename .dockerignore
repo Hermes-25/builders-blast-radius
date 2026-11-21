@@ -27,3 +27,5 @@
 !binding-reads.json.gz
 !option_flow.py
 !forward-reads.json.gz
+!import_graph.py
+!import-graph.json.gz

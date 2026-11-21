@@ -151,3 +151,24 @@ Four edits to distinct tokenizer settings reduced scheduled time from 147.268 to
 On a separate set of 72 mixed patches the previous release scheduled 590.096 seconds and this entry scheduled 541.328. Two runs of each gave mean totals of 624.295 and 576.871 seconds after adding CPU. Three predictions changed. Independent full-suite runs verified that all 1,581 newly omitted test/patch pairs passed.
 
 The 30 public sample patches scheduled 98.011 seconds in all three runs with the organizer's two-core restrictions. All 73 failing pairs were retained, with a median total of 103.718 seconds including CPU. A 40-patch CPU stress test took 46.202 wall seconds. A separate 60-patch wall-stall test returned every schedule in 86.421 seconds.
+
+## Import failures and namespace reads
+
+The baseline profiler runs each of the 58 test files in its own interpreter. It records imports during collection, method execution, class setup and teardown, and worker execution. It also records when the dialect registry returns a particular parser, generator, tokenizer, or dialect class, including inherited classes and registry enumeration. All 1,620 catalogue tests have an execution record. The profile comes from the unmodified SQLGlot revision.
+
+To regenerate the graph in the organizer's locked Python environment, run the following from this repository with the clean pinned checkout and public catalogue as inputs.
+
+```sh
+export PYTHONHASHSEED=0 PYTHON_CPU_COUNT=2 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
+python profiling/build_import_graph.py /path/to/pinned-sqlglot /path/to/sample/tests.json first.gz
+python profiling/build_import_graph.py /path/to/pinned-sqlglot /path/to/sample/tests.json second.gz
+python profiling/merge_import_graphs.py first.gz second.gz import-graph.json.gz
+```
+
+For a single import alias edit in a concrete dialect component, a short-lived subprocess tries to load the patched module. The narrower dependency model requires a fresh alias and a `NameError` for the original binding in the affected module. It keeps the tests that required that module or a dependent module and reserves the live test budget for other changes. On a timeout, alias collision, or different exception, normal selection and replay continue. Two baseline-proven class namespace reads can also be distinguished from inspection of module globals.
+
+Four independently constructed changes in Athena, Exasol, Solr and StarRocks were run against the full original test suite. All 253 failing test/patch pairs were selected. Their simulated schedule took 54.242 seconds, matching the schedule constructed from the observed failures in each case. Total cost including selector CPU fell from 72.145 to 57.772 seconds.
+
+On a 72-patch mixed workload, 12 import changes accounted for 269.972 seconds of the previous 583.933 simulated seconds. This revision reduced the import changes to 229.935 seconds. Total cost including CPU fell from 632.118 to 591.434 seconds in the paired restricted runs. This mixed workload measures scheduling cost. The independent full-suite results above measure failure coverage.
+
+Three public sample runs each retained all 73 failure pairs and scheduled 98.011 seconds. Separate 40- and 60-patch stress runs returned every schedule in 54.038 and 89.282 wall seconds, respectively.

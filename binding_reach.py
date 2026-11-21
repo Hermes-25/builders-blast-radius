@@ -74,10 +74,11 @@ def changed_names(source, updated):
 
 
 @lru_cache(maxsize=64)
-def local_reader_lines(source, names):
+def local_reader_lines(source, names, class_sites=()):
     tree = parsed(source)
     lines = set()
     targets = set(names) | REFLECT
+    class_sites = set(class_sites)
 
     declaration_read = False
 
@@ -100,6 +101,15 @@ def local_reader_lines(source, names):
             if not inside:
                 declaration_read = True
         for child in ast.iter_child_nodes(node):
+            if (
+                isinstance(node, ast.Call)
+                and child is node.func
+                and isinstance(child, ast.Name)
+                and child.id in {"vars", "dir"}
+                and child.id not in names
+                and (node.lineno, node.col_offset) in class_sites
+            ):
+                continue
             starts_body = (
                 isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
                 and child in node.body
@@ -120,6 +130,10 @@ class BindingProfile:
         self.import_seconds = 0.0
         self.exports = data.get("exports", {})
         self.static_attrs = set(data.get("static_attrs", ()))
+        self.class_sites = {
+            p: tuple(map(tuple, coords))
+            for p, coords in data.get("class_sites", {}).items()
+        }
 
     def accepts_import(self, path, updated, module):
         if (
@@ -159,7 +173,9 @@ class BindingProfile:
         watched = names | {"__dict__", "__all__"}
         if any(module + ":" + name in self.startup for name in watched):
             return None
-        lines, declared = local_reader_lines(source, tuple(sorted(names)))
+        lines, declared = local_reader_lines(
+            source, tuple(sorted(names)), self.class_sites.get(path, ())
+        )
         exports = set(self.exports.get(module, ()))
         if (
             declared

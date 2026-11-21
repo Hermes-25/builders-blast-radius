@@ -166,6 +166,7 @@ class Selector:
         self.values = None
         self.helper = None
         self.binding = None
+        self.import_graph = None
         self.flow = None
         self.module_lines = {}
         self.module_groups = []
@@ -425,6 +426,16 @@ class Selector:
                 proof = None
             if proof is not None:
                 selected.intersection_update(proof)
+        if self.import_graph is not None and len(sections) == 1 and selected:
+            path, hunks = sections[0]
+            if path in self.sources and any(line.startswith(("-from ", "+from ")) for line in hunks):
+                try:
+                    source = self.sources[path]
+                    proof = self.import_graph.selection(path, source, apply_hunks(source, hunks), self)
+                    if proof is not None:
+                        selected.intersection_update(proof)
+                except (ValueError, TypeError, KeyError, SyntaxError, RecursionError):
+                    pass
         return selected
 
 
@@ -577,6 +588,11 @@ def main():
         with gzip.open(binding_path,"rt") as handle:
             selector.binding = BindingProfile(json.load(handle),selector.numbers,args.project)
     verifier = None
+    graph_path = Path(__file__).with_name("import-graph.json.gz")
+    if graph_path.exists() and not args.static:
+        from import_graph import ImportGraph
+        with gzip.open(graph_path, "rt") as handle:
+            selector.import_graph = ImportGraph(json.load(handle), tests, args.project)
     slices = None
     if args.project.is_dir() and not args.static:
         from replay import Verifier
@@ -599,13 +615,25 @@ def main():
             continue
         try:
             text = patch.read_text(encoding="utf-8")
+            if selector.import_graph is not None:
+                selector.import_graph.confirmed_path = None
             selected = selector.affected(text)
-            if slices:
+            # A fresh interpreter already confirmed that the target module
+            # cannot be initialized. Keep every identified dependent test and
+            # reserve the limited real-test budget for other patch types.
+            confirmed = (selector.import_graph and selector.import_graph.confirmed_path
+                         and text.count("diff --git ") == 1)
+            if slices and not confirmed:
                 selected = slices.check(selected, text, selector, changes, apply_hunks, function_ranges)
-            if verifier:
+            if verifier and not confirmed:
                 selected = verifier.check(
                     selected, text, selector, changes, apply_hunks
                 )
+            if confirmed:
+                if slices:
+                    slices.passed = set()
+                if verifier:
+                    verifier.passed = set()
         except UnicodeError:
             text = ""
             selected = selector.all_numbers
