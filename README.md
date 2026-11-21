@@ -12,6 +12,8 @@ This entry selects SQLGlot regression tests for each submitted patch and distrib
 
 Replay starts with a 45-second CPU allowance and an 85-second wall deadline for the batch. Each probe has its own CPU timer and parent-enforced wall timeout. The selector has a 135-second fallback deadline for remaining commits. The scorer rebuilds and starts the image with a read-only filesystem, a private 64 MB temporary directory and networking disabled.
 
+For a change to one existing string key's literal value in a class dictionary, the selector can use baseline reads for that key. Operations that can observe every value contribute all their readers. A recorded map mutation or a shared startup read of the changed value disables that refinement. The profiling pass uses tracked dictionaries on the pristine source. Submitted patches execute on the original dictionary implementation.
+
 ## Running the entry
 
 Build from this directory. Set `KIT` to the extracted [official starter kit](https://www.joinbuilders.org/buildathon/tracks/blast-radius/files/blast-radius-sample.tar.gz).
@@ -57,7 +59,10 @@ python profiling/build_isolated.py "$SQLGLOT" "$KIT/sample/tests.json" isolated.
 python profiling/build_modules.py "$SQLGLOT" "$KIT/sample/tests.json" module-profile.json.gz
 python profiling/build_dispatch.py "$SQLGLOT" base-dispatch.gz
 python profiling/build_dispatch.py "$SQLGLOT" worker-dispatch.gz --tests tests/test_optimizer.py tests/test_executor.py
-python profiling/merge_dispatch.py base-dispatch.gz worker-dispatch.gz impact-index.json.gz option-semantic.gz semantic-index.json.gz
+python profiling/merge_dispatch.py base-dispatch.gz worker-dispatch.gz impact-index.json.gz option-semantic.gz dispatch-semantic.gz
+python profiling/build_mapping.py "$SQLGLOT" full-mapping.gz
+python profiling/build_mapping.py "$SQLGLOT" worker-mapping.gz --tests tests/test_optimizer.py tests/test_executor.py
+python profiling/merge_mapping.py full-mapping.gz worker-mapping.gz dispatch-semantic.gz semantic-index.json.gz
 ```
 
 ## Measured performance
@@ -71,3 +76,7 @@ Six new callback changes were tested against their associated dialect suites and
 The forty-patch CPU stress batch used 46.378 CPU seconds and 47.142 wall seconds. The sixty-patch wall-stall batch used 8.254 CPU seconds and 87.219 wall seconds.
 
 Six further import and class-setting mutations were each exercised against the complete pinned suite. The two selectors scheduled every one of the 240 failing test/patch pairs. The earlier entry used 125.076 simulated seconds and 127.050 total seconds. This entry used 68.598 simulated seconds and 70.992 total seconds.
+
+The dictionary reader refinement reduced the 30-patch public schedule from 107.487 to 98.011 seconds with zero misses. Eight new SQL dialect dictionary changes were run against their associated dialect suite and the shared dialect suite. Scheduled work fell from 90.614 to 14.818 seconds, retaining all observed failing test/patch pairs.
+
+Three final public-image runs had zero missed commits. They scheduled 98.011, 98.011 and 100.666 seconds respectively, with a median total of 104.118 seconds including measured CPU. Replay deadlines can retain additional tests under load. Four of the new dictionary mutations were also run against the complete pinned suite. Both failing test/patch pairs were scheduled, and the full-suite holdout total was 7.455 seconds.

@@ -1,6 +1,7 @@
 """Use observed dependencies of the pinned program for changes to declarations and comparisons."""
 
 import ast
+import json
 from functools import lru_cache
 
 
@@ -133,6 +134,52 @@ def option_dependency(path, differences):
     return "option:" + ".".join((path[:-3].replace("/", "."), *classes, lhs.id))
 
 
+def mapping_dependency(path, differences):
+    """A pure literal edit can only alter the value of the matching original mapping key."""
+    if not path.startswith("sqlglot/"):
+        return None
+    if any(
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))
+        for node, _ in differences
+    ):
+        return None
+    if not any(isinstance(node, ast.ClassDef) for node, _ in differences):
+        return None
+    for old, new in differences:
+        if not isinstance(old, ast.Assign) or not isinstance(new, ast.Assign):
+            continue
+        if len(old.targets) != 1 or len(new.targets) != 1:
+            return None
+        name = old.targets[0]
+        if (
+            not isinstance(name, ast.Name)
+            or not name.id.isupper()
+            or ast.dump(name) != ast.dump(new.targets[0])
+        ):
+            return None
+        if not isinstance(old.value, ast.Dict) or not isinstance(new.value, ast.Dict):
+            return None
+        try:
+            before = ast.literal_eval(old.value)
+            after = ast.literal_eval(new.value)
+        except (ValueError, TypeError):
+            return None
+        if list(before) != list(after) or not all(type(key) is str for key in before):
+            return None
+        if len(before) != len(old.value.keys) or len(after) != len(new.value.keys):
+            return None
+        changed = [
+            key
+            for key, a, b in zip(before, old.value.values, new.value.values)
+            if ast.dump(a) != ast.dump(b)
+        ]
+        if len(changed) == 1:
+            return f"mapping:{path}:{old.lineno}:{name.id}|" + json.dumps(
+                changed[0], ensure_ascii=True
+            )
+    return None
+
+
 class SemanticProfile:
     def __init__(self, profile, numbers):
         self.types = profile["types"]
@@ -168,11 +215,18 @@ class SemanticProfile:
         option = option_dependency(path, differences)
         if option in self.owners:
             return self.consumers(option)
-        if ast.Constant in parents and type(first) is type(replacement) and isinstance(
-            first, (bool, int, float, str)
+        mapping = mapping_dependency(path, differences)
+        if mapping in self.owners:
+            return self.consumers(mapping)
+        if (
+            ast.Constant in parents
+            and type(first) is type(replacement)
+            and isinstance(first, (bool, int, float, str))
         ):
             for old_node, new_node in differences:
-                if not isinstance(old_node, ast.Lambda) or not isinstance(new_node, ast.Lambda):
+                if not isinstance(old_node, ast.Lambda) or not isinstance(
+                    new_node, ast.Lambda
+                ):
                     continue
                 if ast.dump(old_node.args) != ast.dump(new_node.args):
                     continue
