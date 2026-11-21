@@ -20,3 +20,10 @@
 !fixture_fields.py
 !operand_values.py
 !operand-values.json.gz
+!pure_contract.py
+!helper_replay.py
+!helper-inputs.json.gz
+!binding_reach.py
+!binding-reads.json.gz
+!option_flow.py
+!forward-reads.json.gz

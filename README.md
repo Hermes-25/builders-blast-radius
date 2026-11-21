@@ -28,7 +28,13 @@ On the unmodified checkout, a separate profiling pass records primitive values a
 
 For TPC fixture changes, the selector uses the original fixture reader and replays each changed row through the original optimizer test method. SQL generation, optimizer assertions and worker result types must still agree. For assertions that use a database, unchanged SQL inputs establish that the database receives the same operations as the pristine test. A new or unsupported database operation keeps the test selected. A separate trace of the entire executor class records test-call file reads so class setup does not assign a shared file to whichever test ran first.
 
-When one Python source file and one or more SQL fixtures change, the selector combines source observations with fixture readers. Every replay uses the complete patch. For TPC files, the selector checks which inputs each original executor test receives. A changed title or expected SQL can leave the production query and execution flag identical. Such a test still runs if the production change can affect it. A changed query string, an execution-flag change for a relevant method, an unverified reader, or failed fixture loading keeps the broader decision. A change to two production files also keeps broader coverage, because a change in a callee can invalidate a conclusion drawn about its caller in isolation.
+When one Python source file and one or more SQL fixtures change, the selector combines source observations with fixture readers. Every replay uses the complete patch. For TPC files, the selector checks which inputs each original executor test receives. A changed title or expected SQL can leave the production query and execution flag identical. Such a test still runs if the production change can affect it. A changed query string, an execution-flag change for a relevant method, an unverified reader, or failed fixture loading keeps the broader decision. For changes to two production files, a caller and its changed callee can interact. The selector can compare both sides of a direct sequence-index caller edit together when it has a baseline profile for the pure callee. Other combinations retain broader coverage.
+
+For five small Python helpers, the selector records original call sites and argument shapes. When an eligible body changes, it evaluates the old and new restricted expressions on those same inputs. Sequence elements whose contents are opaque retain their identity relationships. Unsupported operations keep the test selected. A separate cold run records the entire import and test lifetime for three expensive cases.
+
+For top-level literal and import-alias changes, the selector combines baseline external module-attribute reads with source locations that load the affected global name. Reading a name while defining a class or module can affect later users. Declaration reads, re-exports, namespace reflection and uncertain imports keep broader coverage. The selector also tries importing the patched module and its dialects in an isolated process before using a narrower selection.
+
+Some tokenizer attributes travel through a constructor before they affect tokenization. For scalar options, a separate baseline trace records the tests that read the downstream field or directly access the original option. Options observed during startup retain broader coverage. The distinction between an executed source statement and a changed value reaching an observable result is related to work on regression-test selection and state infection. [Rothermel and Harrold](https://www.cs.purdue.edu/homes/xyzhang/spring07/Papers/p173-rothermel.pdf) and [Just and colleagues](https://homes.cs.washington.edu/~mernst/pubs/state-infection-issta2014-abstract.html).
 
 ## Running the entry
 
@@ -92,11 +98,23 @@ python profiling/build_values.py "$SQLGLOT" values-workers.gz --tests tests/test
 python profiling/build_predicates.py "$SQLGLOT" predicates-full.gz
 python profiling/build_predicates.py "$SQLGLOT" predicates-workers.gz --tests tests/test_optimizer.py tests/test_executor.py
 python profiling/merge_values.py values-full.gz values-workers.gz operand-values.json.gz --extra predicates-full.gz predicates-workers.gz
+python profiling/build_helper.py "$SQLGLOT" helper-full.gz
+python profiling/build_helper.py "$SQLGLOT" helper-workers.gz --tests tests/test_optimizer.py tests/test_executor.py
+python profiling/build_helper_cold.py "$SQLGLOT" helper-parser.gz tests/test_parser.py::TestParser::test_max_nodes
+python profiling/build_helper_cold.py "$SQLGLOT" helper-ds.gz tests/test_executor.py::TestExecutor::test_execute_tpcds
+python profiling/build_helper_cold.py "$SQLGLOT" helper-h.gz tests/test_executor.py::TestExecutor::test_execute_tpch
+python profiling/merge_helpers.py helper-full.gz helper-workers.gz helper-inputs.json.gz helper-parser.gz helper-ds.gz helper-h.gz
+python profiling/build_bindings.py "$SQLGLOT" binding-full.gz
+python profiling/build_bindings.py "$SQLGLOT" binding-workers.gz --tests tests/test_optimizer.py tests/test_executor.py
+python profiling/merge_bindings.py binding-full.gz binding-workers.gz binding-reads.json.gz impact-index.json.gz
+python profiling/build_option_flow.py "$SQLGLOT" flow-full.gz
+python profiling/build_option_flow.py "$SQLGLOT" flow-workers.gz --tests tests/test_optimizer.py tests/test_executor.py
+python profiling/merge_option_flow.py flow-full.gz flow-workers.gz impact-index.json.gz forward-reads.json.gz
 ```
 
-## Measured performance
+## Earlier measured revisions
 
-The preceding official practice revision scored 288.0 seconds with zero missed commits on three runs. The public sample, locally generated holdouts and hidden practice batch contain different patches.
+An earlier official practice revision scored 288.0 seconds with zero missed commits on three runs. The public sample, locally generated holdouts and hidden practice batch contain different patches.
 
 Three local runs under the official two-CPU limits each scheduled 98.011 seconds and missed zero of the 30 public commits. Median total time including selector CPU was 106.234 seconds. Running the same scheduler on only the public failing IDs costs 94.351 simulated seconds.
 
@@ -117,3 +135,19 @@ Across three alternating runs on a separate 72-patch mixed workload, median tota
 On 12 mutations targeting widely shared TPC code, three alternating runs produced median totals of 232.894 seconds for the preceding official revision and 213.702 for this one. All six failures observed over 36 original TPC-method executions were retained. Selector runtimes and probe deadlines can vary under load.
 
 A 40-patch CPU stress batch returned every schedule in 51.561 wall seconds using 50.520 CPU seconds. The 60-patch wall-stall batch returned every schedule in 90.585 wall seconds using 9.093 CPU seconds. Both used a one-CPU container with a read-only root, 64 MB of temporary storage, a non-root user and networking disabled.
+
+## Call-input and binding validation
+
+Six fresh helper changes reduced scheduled time from 122.191 to 90.835 seconds, retaining all 16 failures found by the complete pinned suite. Six previously labelled multi-file changes fell from 93.509 to 86.110 seconds with all 178 failures retained. This includes a patch that changes a caller and its callee together.
+
+The benchmark and source-profiling commands use separate directories. Only the unchanged pinned program is used to build the submitted profiles. Full-suite mutation outcomes are used for evaluation.
+
+Across six additional top-level binding changes, scheduled cost fell from 204.182 to 150.928 seconds. All 1,527 independently observed failing pairs were retained, including tests from 34 files that failed to import.
+
+## Forwarded tokenizer fields
+
+Four edits to distinct tokenizer settings reduced scheduled time from 147.268 to 16.597 seconds. Selector CPU changed from 1.147 to 2.666 seconds. Full runs of the original test suite retained all 13 failing test/patch pairs. A fifth edit to a PostgreSQL subclass passed all 1,620 baseline-active tests.
+
+On a separate set of 72 mixed patches the previous release scheduled 590.096 seconds and this entry scheduled 541.328. Two runs of each gave mean totals of 624.295 and 576.871 seconds after adding CPU. Three predictions changed. Independent full-suite runs verified that all 1,581 newly omitted test/patch pairs passed.
+
+The 30 public sample patches scheduled 98.011 seconds in all three runs with the organizer's two-core restrictions. All 73 failing pairs were retained, with a median total of 103.718 seconds including CPU. A 40-patch CPU stress test took 46.202 wall seconds. A separate 60-patch wall-stall test returned every schedule in 86.421 seconds.

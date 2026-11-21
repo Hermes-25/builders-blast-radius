@@ -10,7 +10,7 @@ from pathlib import Path
 import re
 import time
 
-from semantic import SemanticProfile, statement_span
+from semantic import SemanticProfile, statement_span, parsed
 
 
 HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
@@ -164,6 +164,9 @@ class Selector:
         }
         self.isolated = {}
         self.values = None
+        self.helper = None
+        self.binding = None
+        self.flow = None
         self.module_lines = {}
         self.module_groups = []
         self.module_unknown = set()
@@ -254,6 +257,30 @@ class Selector:
         selected = set()
         try:
             sections = changes(patch)
+            if 1 < len(sections) <= 8 and len({p for p, _ in sections}) == len(sections):
+                parts = re.split(r"(?m)^diff --git ", patch)[1:]
+                kept = []
+                removed = set()
+                if len(parts) == len(sections):
+                    for part, (path, hunks) in zip(parts, sections):
+                        source = self.sources.get(path)
+                        if (source is not None and path.startswith("sqlglot/") and path.endswith(".py")
+                            and all(not line[1:].strip() or line[1:].lstrip().startswith("#")
+                                    for line in hunks if line.startswith(("+","-")))):
+                            updated = apply_hunks(source, hunks)
+                            if ast.dump(parsed(source)) == ast.dump(parsed(updated)):
+                                removed.add(path)
+                                continue
+                        kept.append("diff --git " + part)
+                    if removed:
+                        selected.update(self.untraced_reads)
+                        for path in removed:
+                            selected.update(self.source_readers.get(path, ()))
+                            selected.update(self.by_file.get(path, ()))
+                            selected.update(self.class_fixtures.get(path, ()))
+                        if kept:
+                            selected.update(self.affected("".join(kept)))
+                        return selected
             if (
                 1 < len(sections) <= 6
                 and len({p for p, _ in sections}) == len(sections)
@@ -291,6 +318,18 @@ class Selector:
                 candidate = compile(updated, path, "exec", dont_inherit=True)
                 if marshal.dumps(baseline) == marshal.dumps(candidate):
                     continue
+                if (self.flow is not None and len(sections)==1 and
+                        any(re.match(r"[-+]\s+[A-Z][A-Z_]+\s*[:=]", line) for line in hunks)):
+                    precise=self.flow.selection(path,source,updated)
+                    if precise is not None:
+                        selected.update(precise)
+                        continue
+                if (self.binding is not None and len(sections) == 1 and path.startswith("sqlglot/") and
+                    any(re.match(r"[-+](?:from \w|[A-Za-z_]\w*\s*[:=])", line) for line in hunks)):
+                    precise = self.binding.selection(path, source, updated, self)
+                    if precise is not None:
+                        selected.update(precise)
+                        continue
                 if self.semantic is not None and len(sections) == 1:
                     precise = self.semantic.selection(
                         path, source, updated, self.sources
@@ -379,6 +418,13 @@ class Selector:
                         selected.intersection_update(observed | preserved)
                 except (ValueError, SyntaxError, RecursionError):
                     pass
+        if self.helper is not None and selected:
+            try:
+                proof = self.helper.selection(sections,self,apply_hunks)
+            except (ValueError,TypeError,KeyError,SyntaxError,RecursionError,OverflowError):
+                proof = None
+            if proof is not None:
+                selected.intersection_update(proof)
         return selected
 
 
@@ -515,6 +561,21 @@ def main():
         with gzip.open(value_path, "rt") as handle:
             selector.values = ValueProfile(json.load(handle), selector.numbers)
     durations = {test["number"]: round(test["seconds"] * 1000) for test in tests}
+    flow_path=Path(__file__).with_name("forward-reads.json.gz")
+    if flow_path.exists():
+        from option_flow import FlowProfile
+        with gzip.open(flow_path,"rt") as handle:
+            selector.flow=FlowProfile(json.load(handle),selector.numbers)
+    helper_path = Path(__file__).with_name("helper-inputs.json.gz")
+    if helper_path.exists():
+        from helper_replay import HelperProfile
+        with gzip.open(helper_path,"rt") as handle:
+            selector.helper = HelperProfile(json.load(handle),selector.numbers)
+    binding_path = Path(__file__).with_name("binding-reads.json.gz")
+    if binding_path.exists():
+        from binding_reach import BindingProfile
+        with gzip.open(binding_path,"rt") as handle:
+            selector.binding = BindingProfile(json.load(handle),selector.numbers,args.project)
     verifier = None
     slices = None
     if args.project.is_dir() and not args.static:

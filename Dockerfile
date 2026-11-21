@@ -12,3 +12,6 @@ COPY fixture-attributes.json /app/
 COPY output_core.py table-outputs.json.gz /app/
 COPY fixture_fields.py /app/
 COPY operand_values.py operand-values.json.gz /app/
+COPY pure_contract.py helper_replay.py helper-inputs.json.gz /app/
+COPY binding_reach.py binding-reads.json.gz /app/
+COPY option_flow.py forward-reads.json.gz /app/
