@@ -8,6 +8,7 @@ The dependency index was built from the unchanged [SQLGlot revision](https://git
 
 - File reads cover fixture changes and tests that inspect source.
 - AST comparison distinguishes changes to functions and callbacks from changes to declarations or module initialization. Coverage includes SQLGlot work delegated to multiprocessing workers, linked back to the test that submitted it.
+- The second index records operand type categories, tests that read expression metadata, and tests that invoke individual callbacks produced in class-level dispatch tables. For a single-file change, the selector compares the original and patched syntax. It narrows eligible changes to the observed consumers and treats a comparison as unchanged only when the observed operand categories support the same equality and identity result.
 - A value-only change in a specialized SQL dialect's literal class settings selects tests that exercise that dialect's implementation across parsing, generation, and typing.
 - When patch application, syntax, or dependency evidence leaves too much uncertainty, the selector schedules the entire supplied test catalogue.
 - For each supported worker count, the scheduler considers the busiest worker's test time plus two seconds per worker. It assigns longer tests first and keeps the cheapest schedule it finds.
@@ -23,10 +24,12 @@ python KIT/score.py KIT/sample KIT/sample/answers.json output.jsonl
 
 To test the container, build with `docker build --platform linux/amd64 -t blast-radius .`. The sample kit's Makefile documents the scorer's read-only mounts and resource limits.
 
-Three runs of the entry in the pinned Linux image with those limits produced identical outputs. The official public scorer counted zero misses across 30 patches and 274.041 simulated seconds per run, excluding the selector's CPU time. The unmodified starter scored 1,210.470 simulated seconds on the same sample.
+Three runs of the entry in the pinned Linux image with those limits produced identical outputs. The official public scorer counted zero misses across 30 patches and 154.270 simulated seconds per run, excluding the selector's CPU time. The previous submission used 274.041 simulated seconds on this sample. The unmodified starter scored 1,210.470 simulated seconds on the same sample.
 
 ## Rebuild the index
 
-Use the Python base image and `requirements.lock` from the official kit plus `coverage==7.17.4`. Check out the pinned revision and run `python build_index.py PATH_TO_SQLGLOT impact-index.json.gz`. The generator reads the unchanged source and runs its tests to collect dependencies. It takes neither patches nor answer files as inputs.
+Use the Python base image and `requirements.lock` from the official kit plus `coverage==7.17.4`. Check out the pinned revision and run `python build_index.py PATH_TO_SQLGLOT impact-index.json.gz`. Then run `python build_semantic_index.py PATH_TO_SQLGLOT semantic-index.json.gz` on Linux with the same dependencies. Both generators read the unchanged revision and run SQLGlot's tests to collect dependencies. The latter profiled 1,620 passing tests and 25,440 subtests. It accepts only the pristine project checkout and the index output path.
+
+Dynamic file dependencies are described by [Gligoric, Eloussi, and Marinov](https://users.ece.utexas.edu/~gligoric/papers/GligoricETAL15Ekstazi.pdf). [Liu and colleagues](https://www.cs.cornell.edu/~legunsen/pubs/LiuETAL23FineRTS.pdf) studied the effect of reasoning about semantics on test selection. The Python instrumentation and change analysis here were written for this entry.
 
 The organizer's Python starter supplied the Docker base and CLI contract. SQLGlot source embedded in the index is MIT-licensed under [SQLGLOT-LICENSE](SQLGLOT-LICENSE). The selector and index generator are MIT-licensed under [LICENSE](LICENSE).

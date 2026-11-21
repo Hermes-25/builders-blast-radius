@@ -5,8 +5,11 @@ import ast
 from collections import defaultdict
 import gzip
 import json
+import marshal
 from pathlib import Path
 import re
+
+from semantic import SemanticProfile
 
 
 HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
@@ -133,7 +136,7 @@ def only_class_literals_changed(original, updated):
 
 
 class Selector:
-    def __init__(self, index, tests):
+    def __init__(self, index, tests, semantic=None):
         self.tests = tests
         self.numbers = {test["id"]: test["number"] for test in tests}
         self.by_file = defaultdict(set)
@@ -142,6 +145,7 @@ class Selector:
         self.all_numbers = set(self.numbers.values())
         self.slots = [self.numbers.get(node) for node in index["tests"]]
         self.unprofiled = self.all_numbers.difference(self.slots)
+        self.semantic = SemanticProfile(semantic, self.numbers) if semantic else None
         self.reads = index["reads"]
         self.sources = index["sources"]
         self.startup = index["startup"]
@@ -160,7 +164,8 @@ class Selector:
     def affected(self, patch):
         selected = set()
         try:
-            for path, hunks in changes(patch):
+            sections = changes(patch)
+            for path, hunks in sections:
                 readers = self.numbers_for(self.reads.get(path, ()))
                 selected.update(readers)
                 selected.update(self.by_file.get(path, ()))
@@ -171,6 +176,18 @@ class Selector:
 
                 source = self.sources[path]
                 updated = apply_hunks(source, hunks)
+                # Compilation also catches illegal scope/control-flow edits that
+                # pass the AST parser. Identical bytecode and metadata cover
+                # harmless changes folded by Python's compiler.
+                baseline = compile(source, path, "exec", dont_inherit=True)
+                candidate = compile(updated, path, "exec", dont_inherit=True)
+                if marshal.dumps(baseline) == marshal.dumps(candidate):
+                    continue
+                if self.semantic is not None and len(sections) == 1:
+                    precise = self.semantic.selection(path, source, updated, self.sources)
+                    if precise is not None:
+                        selected.update(precise)
+                        continue
                 ranges = function_ranges(source, updated)
                 if ranges == []:
                     continue
@@ -186,6 +203,9 @@ class Selector:
                             dialect_tests = set()
                             for component in ("dialects", "parsers", "generators", "typing"):
                                 dialect_tests.update(self.file_tests.get(f"sqlglot/{component}/{dialect}", ()))
+                            # Shared parser methods may never execute a line in the
+                            # concrete dialect, including throughout its own tests.
+                            dialect_tests.update(self.by_file.get("tests/dialects/test_" + dialect, ()))
                             if dialect_tests:
                                 selected.update(dialect_tests)
                                 continue
@@ -233,10 +253,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data", type=Path, default=Path("/data"))
     parser.add_argument("--index", type=Path, default=Path(__file__).with_name("impact-index.json.gz"))
+    parser.add_argument("--semantics", type=Path, default=Path(__file__).with_name("semantic-index.json.gz"))
     args = parser.parse_args()
+    with gzip.open(args.semantics, "rt", encoding="utf-8") as stream:
+        semantic = json.load(stream)
     tests = json.loads((args.data / "tests.json").read_text(encoding="utf-8"))["tests"]
     with gzip.open(args.index, "rt", encoding="utf-8") as stream:
-        selector = Selector(json.load(stream), tests)
+        selector = Selector(json.load(stream), tests, semantic)
     durations = {test["number"]: round(test["seconds"] * 1000) for test in tests}
     for patch in sorted((args.data / "commits").glob("*.patch")):
         try:
