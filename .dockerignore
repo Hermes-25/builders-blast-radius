@@ -1,5 +1,10 @@
 *
+!pinned-source.tar.gz
 !selector.py
-!impact-index.json.gz
 !semantic.py
+!replay.py
+!impact-index.json.gz
 !semantic-index.json.gz
+!source-reads.json.gz
+!isolated.json.gz
+!pytz-2026.6-py2.py3-none-any.whl

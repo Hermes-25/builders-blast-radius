@@ -8,6 +8,7 @@ import json
 import marshal
 from pathlib import Path
 import re
+import time
 
 from semantic import SemanticProfile, statement_span
 
@@ -26,9 +27,15 @@ def changes(patch):
     result = []
     for section in sections[1:]:
         lines = section.split("\n")
-        hunk_start = next((i for i, line in enumerate(lines) if HUNK.match(line)), len(lines))
-        old = next((line[4:] for line in lines[:hunk_start] if line.startswith("--- ")), "")
-        new = next((line[4:] for line in lines[:hunk_start] if line.startswith("+++ ")), "")
+        hunk_start = next(
+            (i for i, line in enumerate(lines) if HUNK.match(line)), len(lines)
+        )
+        old = next(
+            (line[4:] for line in lines[:hunk_start] if line.startswith("--- ")), ""
+        )
+        new = next(
+            (line[4:] for line in lines[:hunk_start] if line.startswith("+++ ")), ""
+        )
         if not old.startswith("a/") or not new.startswith("b/") or old[2:] != new[2:]:
             raise ValueError("creation, deletion, rename, or unsupported path")
         if hunk_start == len(lines):
@@ -83,11 +90,13 @@ class FunctionBodies(ast.NodeTransformer):
         self.bodies = []
 
     def visit_FunctionDef(self, node):
-        self.bodies.append((
-            node.body[0].lineno,
-            node.end_lineno,
-            tuple(ast.dump(statement) for statement in node.body),
-        ))
+        self.bodies.append(
+            (
+                node.body[0].lineno,
+                node.end_lineno,
+                tuple(ast.dump(statement) for statement in node.body),
+            )
+        )
         node.body = [ast.Pass()]
         return node
 
@@ -110,7 +119,9 @@ def function_ranges(original, updated):
         return None
     return [
         (start, end)
-        for (start, end, old), (_, _, new) in zip(old_bodies.bodies, new_bodies.bodies, strict=True)
+        for (start, end, old), (_, _, new) in zip(
+            old_bodies.bodies, new_bodies.bodies, strict=True
+        )
         if old != new
     ]
 
@@ -130,13 +141,13 @@ class ClassLiterals(ast.NodeTransformer):
 
 
 def only_class_literals_changed(original, updated):
-    return ast.dump(ClassLiterals().visit(ast.parse(original, type_comments=True))) == ast.dump(
-        ClassLiterals().visit(ast.parse(updated, type_comments=True))
-    )
+    return ast.dump(
+        ClassLiterals().visit(ast.parse(original, type_comments=True))
+    ) == ast.dump(ClassLiterals().visit(ast.parse(updated, type_comments=True)))
 
 
 class Selector:
-    def __init__(self, index, tests, semantic=None):
+    def __init__(self, index, tests, semantic=None, source_reads=None):
         self.tests = tests
         self.numbers = {test["id"]: test["number"] for test in tests}
         self.by_file = defaultdict(set)
@@ -147,6 +158,21 @@ class Selector:
         self.unprofiled = self.all_numbers.difference(self.slots)
         self.semantic = SemanticProfile(semantic, self.numbers) if semantic else None
         self.reads = index["reads"]
+        self.class_fixtures = {
+            path: {self.numbers[name] for name in names if name in self.numbers}
+            for path, names in (source_reads or {}).get("class_fixtures", {}).items()
+        }
+        self.isolated = {}
+        self.source_readers = None
+        if source_reads is not None:
+            seen = set(source_reads["tests"])
+            self.untraced_reads = {
+                n for name, n in self.numbers.items() if name not in seen
+            }
+            self.source_readers = {
+                path: {self.numbers[name] for name in names if name in self.numbers}
+                for path, names in source_reads["reads"].items()
+            }
         self.sources = index["sources"]
         self.startup = index["startup"]
         self.lines = {
@@ -158,6 +184,20 @@ class Selector:
             for path, lines in self.lines.items()
         }
 
+    def isolated_risk(self, path, spans):
+        """Baseline execution includes each expensive test's own import-time and worker code."""
+        result = self.all_numbers.copy()
+        for number, profile in self.isolated.items():
+            seen = profile["lines"].get(path, ())
+            if spans is None:
+                if seen or path in profile["opened"]:
+                    continue
+            elif any(a <= line <= b for a, b in spans for line in seen):
+                continue
+            if number not in self.source_readers.get(path, ()):
+                result.discard(number)
+        return result
+
     def numbers_for(self, slots):
         return {self.slots[slot] for slot in slots} - {None}
 
@@ -167,6 +207,9 @@ class Selector:
             sections = changes(patch)
             for path, hunks in sections:
                 readers = self.numbers_for(self.reads.get(path, ()))
+                if self.source_readers is not None and path in self.sources:
+                    readers = self.source_readers.get(path, set()) | self.untraced_reads
+                readers.update(self.class_fixtures.get(path, ()))
                 selected.update(readers)
                 selected.update(self.by_file.get(path, ()))
                 if path not in self.sources:
@@ -184,7 +227,9 @@ class Selector:
                 if marshal.dumps(baseline) == marshal.dumps(candidate):
                     continue
                 if self.semantic is not None and len(sections) == 1:
-                    precise = self.semantic.selection(path, source, updated, self.sources)
+                    precise = self.semantic.selection(
+                        path, source, updated, self.sources
+                    )
                     if precise is not None:
                         selected.update(precise)
                         continue
@@ -197,24 +242,43 @@ class Selector:
                     # Globals can be consumed by other modules after import,
                     # without executing a line in their defining file again.
                     path_parts = path.split("/")
-                    if len(path_parts) == 3 and path_parts[:2] == ["sqlglot", "dialects"]:
+                    if len(path_parts) == 3 and path_parts[:2] == [
+                        "sqlglot",
+                        "dialects",
+                    ]:
                         dialect = path_parts[-1]
-                        if dialect not in {"__init__.py", "dialect.py"} and only_class_literals_changed(source, updated):
+                        if dialect not in {
+                            "__init__.py",
+                            "dialect.py",
+                        } and only_class_literals_changed(source, updated):
                             dialect_tests = set()
-                            for component in ("dialects", "parsers", "generators", "typing"):
-                                dialect_tests.update(self.file_tests.get(f"sqlglot/{component}/{dialect}", ()))
+                            for component in (
+                                "dialects",
+                                "parsers",
+                                "generators",
+                                "typing",
+                            ):
+                                dialect_tests.update(
+                                    self.file_tests.get(
+                                        f"sqlglot/{component}/{dialect}", ()
+                                    )
+                                )
                             # Shared parser methods may never execute a line in the
                             # concrete dialect, including throughout its own tests.
-                            dialect_tests.update(self.by_file.get("tests/dialects/test_" + dialect, ()))
+                            dialect_tests.update(
+                                self.by_file.get("tests/dialects/test_" + dialect, ())
+                            )
                             if dialect_tests:
                                 selected.update(dialect_tests)
                                 continue
-                    return self.all_numbers
+                    selected.update(self.isolated_risk(path, None))
+                    continue
 
                 span = statement_span(source, updated) if len(ranges) == 1 else None
                 for start, end in ranges:
                     if any(start <= line <= end for line in self.startup.get(path, ())):
-                        return self.all_numbers
+                        selected.update(self.isolated_risk(path, [(start, end)]))
+                        continue
                     if span and start <= span[0] <= span[1] <= end:
                         if any(span[0] <= line <= span[1] for line in file_lines):
                             start, end = span
@@ -223,6 +287,12 @@ class Selector:
                         if start <= line <= end:
                             slots.update(ids)
                     selected.update(self.numbers_for(slots))
+                    for number, profile in self.isolated.items():
+                        if any(
+                            start <= line <= end
+                            for line in profile["lines"].get(path, ())
+                        ):
+                            selected.add(number)
         except (ValueError, SyntaxError, RecursionError):
             return self.all_numbers
         return selected
@@ -253,25 +323,148 @@ def assign_workers(selected, durations):
     return best
 
 
+def guard_schedule(
+    workers, patch, selector, durations, verified_passes=(), allowance=0
+):
+    """Use already-paid worker time for extra coverage, preserving the original assignment."""
+    if not workers:
+        return workers
+    scheduled = {n for worker in workers for n in worker}
+    excluded = scheduled.union(verified_passes)
+    if len(scheduled) == len(durations):
+        return workers
+    try:
+        sections = changes(patch)
+    except ValueError:
+        return workers
+    primary = set()
+    secondary = set()
+    for path, hunks in sections:
+        file_lines = selector.lines.get(path, {})
+        near = set()
+        old_line = 0
+        for line in hunks:
+            hunk = HUNK.match(line)
+            if hunk:
+                old_line = int(hunk[1])
+            elif line.startswith("-"):
+                near.update((old_line - 1, old_line, old_line + 1))
+                old_line += 1
+            elif line.startswith("+"):
+                near.update((old_line - 1, old_line))
+            elif line.startswith(" "):
+                old_line += 1
+        for line in near:
+            primary.update(selector.numbers_for(file_lines.get(line, ())))
+        secondary.update(selector.file_tests.get(path, ()))
+        secondary.update(selector.by_file.get(path, ()))
+        if path.startswith("sqlglot/") and path.endswith(".py"):
+            stem = path.split("/")[-1]
+            secondary.update(selector.by_file.get("tests/dialects/test_" + stem, ()))
+            secondary.update(selector.by_file.get("tests/test_" + stem, ()))
+    relevant = bool(primary or secondary)
+    loads = [sum(durations[n] for n in worker) for worker in workers]
+    busiest = max(loads)
+
+    def pack(group, cap):
+        for number in sorted(
+            group.difference(excluded), key=lambda n: (durations[n], n)
+        ):
+            idx = min(range(len(loads)), key=loads.__getitem__)
+            if loads[idx] + durations[number] > cap:
+                break
+            workers[idx].append(number)
+            loads[idx] += durations[number]
+            excluded.add(number)
+
+    for group in (primary, secondary, selector.all_numbers):
+        pack(group, busiest)
+    if relevant and allowance:
+        for group in (primary, secondary):
+            pack(group, busiest + allowance)
+    return workers
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data", type=Path, default=Path("/data"))
-    parser.add_argument("--index", type=Path, default=Path(__file__).with_name("impact-index.json.gz"))
-    parser.add_argument("--semantics", type=Path, default=Path(__file__).with_name("semantic-index.json.gz"))
+    parser.add_argument(
+        "--index", type=Path, default=Path(__file__).with_name("impact-index.json.gz")
+    )
+    parser.add_argument(
+        "--semantics",
+        type=Path,
+        default=Path(__file__).with_name("semantic-index.json.gz"),
+    )
+    parser.add_argument("--project", type=Path, default=Path("/project"))
+    parser.add_argument("--static", action="store_true")
+    parser.add_argument(
+        "--guard",
+        type=int,
+        default=120,
+        help="Extra milliseconds allowed per patch; negative disables packing",
+    )
     args = parser.parse_args()
     with gzip.open(args.semantics, "rt", encoding="utf-8") as stream:
         semantic = json.load(stream)
     tests = json.loads((args.data / "tests.json").read_text(encoding="utf-8"))["tests"]
     with gzip.open(args.index, "rt", encoding="utf-8") as stream:
-        selector = Selector(json.load(stream), tests, semantic)
+        with gzip.open(
+            Path(__file__).with_name("source-reads.json.gz"), "rt", encoding="utf-8"
+        ) as reader:
+            selector = Selector(json.load(stream), tests, semantic, json.load(reader))
+    isolated_path = Path(__file__).with_name("isolated.json.gz")
+    if isolated_path.exists():
+        with gzip.open(isolated_path, "rt", encoding="utf-8") as handle:
+            selector.isolated = {
+                selector.numbers[name]: profile
+                for name, profile in json.load(handle).items()
+                if name in selector.numbers
+            }
     durations = {test["number"]: round(test["seconds"] * 1000) for test in tests}
+    verifier = None
+    if args.project.is_dir() and not args.static:
+        from replay import Verifier
+
+        verifier = Verifier(args.project, tests, assign_workers)
+    emergency_deadline = time.monotonic() + 135
+    full_schedule = None
     for patch in sorted((args.data / "commits").glob("*.patch")):
+        if time.monotonic() >= emergency_deadline:
+            if full_schedule is None:
+                full_schedule = assign_workers(selector.all_numbers, durations)
+            print(
+                json.dumps(
+                    {"commit": patch.stem, "workers": full_schedule},
+                    separators=(",", ":"),
+                )
+            )
+            continue
         try:
-            selected = selector.affected(patch.read_text(encoding="utf-8"))
+            text = patch.read_text(encoding="utf-8")
+            selected = selector.affected(text)
+            if verifier:
+                selected = verifier.check(
+                    selected, text, selector, changes, apply_hunks
+                )
         except UnicodeError:
+            text = ""
             selected = selector.all_numbers
         workers = assign_workers(selected, durations)
-        print(json.dumps({"commit": patch.stem, "workers": workers}, separators=(",", ":")))
+        if args.guard >= 0:
+            workers = guard_schedule(
+                workers,
+                text,
+                selector,
+                durations,
+                verifier.passed if verifier else (),
+                args.guard,
+            )
+        print(
+            json.dumps(
+                {"commit": patch.stem, "workers": workers}, separators=(",", ":")
+            )
+        )
 
 
 if __name__ == "__main__":
