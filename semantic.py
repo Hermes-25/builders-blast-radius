@@ -128,3 +128,28 @@ class SemanticProfile:
                     if key in self.owners:
                         return self.consumers(key)
         return None
+
+def statement_span(original, updated):
+    """Return the old executable statement containing a scope-preserving change."""
+    diff = only_difference(ast.parse(original, type_comments=True), ast.parse(updated, type_comments=True))
+    if not diff or not any(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) for n, _ in diff):
+        return None
+    stmt = next(((a,b) for a,b in diff if isinstance(a,ast.stmt)), None)
+    if not stmt:
+        return None
+    old, new = stmt
+    if type(old) is not type(new):
+        return None
+    if isinstance(old, (ast.If, ast.While)):
+        if not any(a is old.test and b is new.test for a,b in diff):
+            return None
+        bounds = old.lineno, old.test.end_lineno
+    elif isinstance(old,(ast.Assign,ast.AugAssign,ast.Return,ast.Expr,ast.Assert,ast.Raise)):
+        bounds = old.lineno, old.end_lineno
+    else:
+        return None
+    def scope(node):
+        return sorted((type(n).__name__, getattr(n, "id", ""))
+            for n in ast.walk(node) if isinstance(n, (ast.Yield,ast.YieldFrom,ast.Await))
+            or isinstance(n,ast.Name) and isinstance(n.ctx,(ast.Store,ast.Del)))
+    return bounds if scope(old) == scope(new) else None

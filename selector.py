@@ -9,7 +9,7 @@ import marshal
 from pathlib import Path
 import re
 
-from semantic import SemanticProfile
+from semantic import SemanticProfile, statement_span
 
 
 HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
@@ -211,9 +211,13 @@ class Selector:
                                 continue
                     return self.all_numbers
 
+                span = statement_span(source, updated) if len(ranges) == 1 else None
                 for start, end in ranges:
                     if any(start <= line <= end for line in self.startup.get(path, ())):
                         return self.all_numbers
+                    if span and start <= span[0] <= span[1] <= end:
+                        if any(span[0] <= line <= span[1] for line in file_lines):
+                            start, end = span
                     slots = set()
                     for line, ids in file_lines.items():
                         if start <= line <= end:

@@ -124,7 +124,7 @@ def flush():
 
 def run_child(context, fn, args, kwargs):
     global node_id
-    if os.getpid() != parent_pid and not getattr(run_child, "started", False):
+    if os.getpid() != int(os.environ["BR_PARENT_PID"]) and not getattr(run_child, "started", False):
         Finalize(None, flush, exitpriority=9)
         run_child.started = True
     node_id = context
@@ -152,16 +152,7 @@ class Plugin:
             self.passed.add(report.nodeid)
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("checkout", type=Path)
-    parser.add_argument("output", type=Path)
-    args = parser.parse_args()
-    root = args.checkout.resolve()
-    output = args.output.resolve()
-    rev = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
-    if rev != "eb11aec4be8cb2122afe713a4816662c3f0fb2fa" or subprocess.check_output(["git","-C",str(root),"diff","HEAD","--name-only"]):
-        raise ValueError("The checkout must be clean and pinned")
+def install(root):
     os.chdir(root)
     sys.path.insert(0, str(root))
     sys.dont_write_bytecode = True
@@ -178,6 +169,22 @@ def main():
     builtins._br_operand = operand
     builtins._br_declare = declare
     builtins._br_class_value = class_value
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("checkout", type=Path)
+    parser.add_argument("output", type=Path)
+    parser.add_argument("--tests", nargs="+", default=["tests"])
+    args = parser.parse_args()
+    root = args.checkout.resolve()
+    output = args.output.resolve()
+    rev = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+    if rev != "eb11aec4be8cb2122afe713a4816662c3f0fb2fa" or subprocess.check_output(["git","-C",str(root),"diff","HEAD","--name-only"]):
+        raise ValueError("The checkout must be clean and pinned")
+    os.environ["BR_ROOT"] = str(root)
+    os.environ["BR_PARENT_PID"] = str(os.getpid())
+    install(root)
     submit = ProcessPoolExecutor.submit
     def tracked(pool, fn, /, *args, **kwargs):
         return submit(pool, run_child, node_id, fn, args, kwargs)
@@ -187,7 +194,7 @@ def main():
     os.environ["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     with tempfile.TemporaryDirectory() as scratch:
         os.environ["BR_SCRATCH"] = scratch
-        result = pytest.main(["-q", "-p", "no:cacheprovider", "--import-mode=prepend", "tests"], plugins=[plugin])
+        result = pytest.main(["-q", "-p", "no:cacheprovider", "--import-mode=prepend", *args.tests], plugins=[plugin])
         flush()
         joined_types, joined_owners, declared = defaultdict(set), defaultdict(set), set()
         for part in Path(scratch).glob("*.json"):
@@ -204,6 +211,10 @@ def main():
                 separators=(",",":"), sort_keys=True).encode())
         print(f"Profiled {len(ordered)} passing tests, {len(joined_types)} operand sites and {len(joined_owners)} class/table consumers; pytest exit {result}")
         sys.exit(result)
+
+
+if __name__ == "__mp_main__" and "BR_ROOT" in os.environ:
+    install(Path(os.environ["BR_ROOT"]))
 
 
 if __name__ == "__main__":
