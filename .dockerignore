@@ -7,4 +7,5 @@
 !semantic-index.json.gz
 !source-reads.json.gz
 !isolated.json.gz
+!module-profile.json.gz
 !pytz-2026.6-py2.py3-none-any.whl

@@ -96,8 +96,8 @@ def closure_factory(path, name, tree, sources):
 
 
 def option_dependency(path, differences):
-    """Identify a single literal option edit on a dialect class."""
-    if not path.startswith("sqlglot/dialects/"):
+    """Identify a single literal option edit on a production class."""
+    if not path.startswith("sqlglot/"):
         return None
     classes = []
     pair = None
@@ -168,6 +168,17 @@ class SemanticProfile:
         option = option_dependency(path, differences)
         if option in self.owners:
             return self.consumers(option)
+        if ast.Constant in parents and type(first) is type(replacement) and isinstance(
+            first, (bool, int, float, str)
+        ):
+            for old_node, new_node in differences:
+                if not isinstance(old_node, ast.Lambda) or not isinstance(new_node, ast.Lambda):
+                    continue
+                if ast.dump(old_node.args) != ast.dump(new_node.args):
+                    continue
+                callback = f"lambda:{path}:{old_node.lineno}"
+                if callback in self.owners:
+                    return self.consumers(callback)
         if not isinstance(first, (str, bool, int, float, type(None))):
             return None
         classes = [a for a, _ in reversed(differences) if isinstance(a, ast.ClassDef)]

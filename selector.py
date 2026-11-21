@@ -163,6 +163,9 @@ class Selector:
             for path, names in (source_reads or {}).get("class_fixtures", {}).items()
         }
         self.isolated = {}
+        self.module_lines = {}
+        self.module_groups = []
+        self.module_unknown = set()
         self.source_readers = None
         if source_reads is not None:
             seen = set(source_reads["tests"])
@@ -197,6 +200,51 @@ class Selector:
             if number not in self.source_readers.get(path, ()):
                 result.discard(number)
         return result
+
+    def set_module_profile(self, profile):
+        """Each group contains tests run together in a separate baseline interpreter."""
+        self.module_groups = [self.by_file[path] for path in profile["modules"]]
+        self.module_unknown = self.all_numbers.difference(
+            *(self.by_file[path] for path in profile["modules"] if path not in profile["unknown"])
+        )
+        self.module_lines = {
+            path: {int(line): mask for line, mask in lines.items()}
+            for path, lines in profile["lines"].items()
+        }
+
+    def structural_risk(self, path, spans):
+        """Intersect broad fallback with startup, case and worker events for each test file."""
+        broad = self.isolated_risk(path, spans)
+        module_lines = self.module_lines.get(path)
+        if not module_lines:
+            return broad
+        mask = 0
+        if spans is None:
+            for owners in module_lines.values():
+                mask |= owners
+            risk = self.file_tests.get(path, set()).copy()
+        else:
+            def within(line):
+                return any(start <= line <= end for start, end in spans)
+
+            for line, owners in module_lines.items():
+                if within(line):
+                    mask |= owners
+            if not mask:
+                return broad
+            slots = {
+                slot for line, values in self.lines.get(path, {}).items() if within(line)
+                for slot in values
+            }
+            risk = self.numbers_for(slots)
+        for group, numbers in enumerate(self.module_groups):
+            if mask & (1 << group):
+                risk.update(numbers)
+        risk.update(self.module_unknown)
+        risk.update(self.source_readers.get(path, ()))
+        risk.update(self.unprofiled)
+        risk.update(number for number in self.isolated if number in broad)
+        return broad.intersection(risk)
 
     def numbers_for(self, slots):
         return {self.slots[slot] for slot in slots} - {None}
@@ -271,13 +319,13 @@ class Selector:
                             if dialect_tests:
                                 selected.update(dialect_tests)
                                 continue
-                    selected.update(self.isolated_risk(path, None))
+                    selected.update(self.structural_risk(path, None))
                     continue
 
                 span = statement_span(source, updated) if len(ranges) == 1 else None
                 for start, end in ranges:
                     if any(start <= line <= end for line in self.startup.get(path, ())):
-                        selected.update(self.isolated_risk(path, [(start, end)]))
+                        selected.update(self.structural_risk(path, [(start, end)]))
                         continue
                     if span and start <= span[0] <= span[1] <= end:
                         if any(span[0] <= line <= span[1] for line in file_lines):
@@ -421,6 +469,10 @@ def main():
                 for name, profile in json.load(handle).items()
                 if name in selector.numbers
             }
+    module_path = Path(__file__).with_name("module-profile.json.gz")
+    if module_path.exists():
+        with gzip.open(module_path, "rt", encoding="utf-8") as handle:
+            selector.set_module_profile(json.load(handle))
     durations = {test["number"]: round(test["seconds"] * 1000) for test in tests}
     verifier = None
     if args.project.is_dir() and not args.static:

@@ -4,6 +4,6 @@ COPY pytz-2026.6-py2.py3-none-any.whl /tmp/
 RUN pip install --no-index --no-deps --disable-pip-version-check /tmp/pytz-2026.6-py2.py3-none-any.whl
 ADD pinned-source.tar.gz /project/
 RUN python -m compileall -q /project/sqlglot /project/tests
-COPY selector.py semantic.py replay.py impact-index.json.gz semantic-index.json.gz source-reads.json.gz isolated.json.gz /app/
+COPY selector.py semantic.py replay.py impact-index.json.gz semantic-index.json.gz source-reads.json.gz isolated.json.gz module-profile.json.gz /app/
 ENV PYTHONDONTWRITEBYTECODE=1
 CMD ["python", "/app/selector.py"]

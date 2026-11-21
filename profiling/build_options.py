@@ -114,9 +114,10 @@ class Plugin:
             self.passed.add(report.nodeid)
 
 
-def install(root):
-    for f in (root / "sqlglot/dialects").glob("*.py"):
-        path = f.relative_to(root).as_posix()
+def install(root, files=None, transform=None, scalar_only=False):
+    if files is None:
+        files = (root / "sqlglot/dialects").glob("*.py")
+    for f in files:
         for cls in ast.walk(ast.parse(f.read_bytes())):
             if not isinstance(cls, ast.ClassDef):
                 continue
@@ -129,8 +130,10 @@ def install(root):
                 ):
                     continue
                 try:
-                    ast.literal_eval(s.value)
+                    value = ast.literal_eval(s.value)
                 except (ValueError, TypeError):
+                    continue
+                if scalar_only and type(value) not in (bool, str, int, float):
                     continue
                 options.add(s.targets[0].id)
     os.chdir(root)
@@ -142,7 +145,8 @@ def install(root):
     def get_code(self, name):
         path = Path(self.path)
         if name == "sqlglot" or name.startswith("sqlglot."):
-            tree = Instrument().visit(ast.parse(path.read_bytes(), filename=str(path)))
+            visitor = transform(path) if transform else Instrument()
+            tree = visitor.visit(ast.parse(path.read_bytes(), filename=str(path)))
             return compile(
                 ast.fix_missing_locations(tree), str(path), "exec", dont_inherit=True
             )
@@ -153,7 +157,7 @@ def install(root):
     builtins._br_lookup = lookup
 
 
-def main():
+def main(install_profile=install, prefixes=("sqlglot.dialects.",)):
     p = argparse.ArgumentParser()
     p.add_argument("checkout", type=Path)
     p.add_argument("out", type=Path)
@@ -170,7 +174,7 @@ def main():
         raise ValueError("Expected unmodified base revision")
     os.environ["BR_ROOT"] = str(root)
     os.environ["BR_PARENT_PID"] = str(os.getpid())
-    install(root)
+    install_profile(root)
     submit = ProcessPoolExecutor.submit
 
     def tracked(pool, fn, /, *args, **kwargs):
@@ -198,7 +202,7 @@ def main():
         vals = {
             key: sorted(slots[node] for node in names if node in slots)
             for key, names in merged.items()
-            if "" not in names and key.startswith("sqlglot.dialects.")
+            if "" not in names and key.startswith(prefixes)
         }
         with gzip.GzipFile(str(out), "wb", mtime=0) as out_file:
             out_file.write(
@@ -209,7 +213,7 @@ def main():
                         "startup": sorted(
                             k
                             for k, names in merged.items()
-                            if "" in names and k.startswith("sqlglot.dialects.")
+                            if "" in names and k.startswith(prefixes)
                         ),
                     },
                     separators=(",", ":"),
@@ -217,7 +221,7 @@ def main():
                 ).encode()
             )
         print(
-            f"Passed {len(tests)} baseline tests and found {len(vals)} observed options without startup reads."
+            f"Passed {len(tests)} baseline tests and observed {len(vals)} keys without startup reads."
         )
         sys.exit(result)
 
