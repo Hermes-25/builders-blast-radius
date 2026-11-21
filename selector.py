@@ -166,6 +166,7 @@ class Selector:
         self.values = None
         self.helper = None
         self.binding = None
+        self.parser_registry = None
         self.import_graph = None
         self.flow = None
         self.module_lines = {}
@@ -319,6 +320,13 @@ class Selector:
                 candidate = compile(updated, path, "exec", dont_inherit=True)
                 if marshal.dumps(baseline) == marshal.dumps(candidate):
                     continue
+                if (self.parser_registry is not None and len(sections)==1 and path.startswith("sqlglot/parsers/")
+                    and any(re.match(r"""[-+]\s+(?:"[^"]+"|'[^']+'|TokenType\.\w+)\s*:""",line)
+                            for line in hunks)):
+                    precise=self.parser_registry.selection(path,source,updated,self)
+                    if precise is not None:
+                        selected.update(precise)
+                        continue
                 if (self.flow is not None and len(sections)==1 and
                         any(re.match(r"[-+]\s+[A-Z][A-Z_]+\s*[:=]", line) for line in hunks)):
                     precise=self.flow.selection(path,source,updated)
@@ -399,6 +407,7 @@ class Selector:
                         ):
                             selected.add(number)
         except (ValueError, SyntaxError, RecursionError):
+            self.invalid_patch = True
             return self.all_numbers
         if self.values is not None and len(sections) == 1 and selected:
             path, hunks = sections[0]
@@ -588,6 +597,18 @@ def main():
         with gzip.open(binding_path,"rt") as handle:
             selector.binding = BindingProfile(json.load(handle),selector.numbers,args.project)
     verifier = None
+    line_gate = None
+    line_path = Path(__file__).with_name("line-gates.json.gz")
+    if line_path.exists():
+        from line_gate import LineGate
+        from replay import schedule_cost
+        with gzip.open(line_path,"rt") as handle:
+            line_gate=LineGate(json.load(handle),selector.numbers)
+    parser_map_path = Path(__file__).with_name("parser-registry.json.gz")
+    if parser_map_path.exists() and not args.static:
+        from parser_registry import ParserRegistry
+        with gzip.open(parser_map_path,"rt") as handle:
+            selector.parser_registry=ParserRegistry(json.load(handle),selector.numbers)
     graph_path = Path(__file__).with_name("import-graph.json.gz")
     if graph_path.exists() and not args.static:
         from import_graph import ImportGraph
@@ -617,7 +638,24 @@ def main():
             text = patch.read_text(encoding="utf-8")
             if selector.import_graph is not None:
                 selector.import_graph.confirmed_path = None
+            selector.invalid_patch = False
             selected = selector.affected(text)
+            if (
+                line_gate is not None
+                and not selector.invalid_patch
+                and (len(selected) > 35 or any(durations[n] >= 1000 for n in selected))
+            ):
+                try:
+                    proof = line_gate.selection(changes(text), selector)
+                    if proof is not None:
+                        narrower = selected.intersection(proof)
+                        if narrower != selected:
+                            before = schedule_cost(selected, durations, assign_workers)
+                            after = schedule_cost(narrower, durations, assign_workers)
+                            if before - after >= 500:
+                                selected = narrower
+                except (KeyError, ValueError, TypeError, SyntaxError, OverflowError, RecursionError):
+                    pass
             # A fresh interpreter already confirmed that the target module
             # cannot be initialized. Keep every identified dependent test and
             # reserve the limited real-test budget for other patch types.

@@ -120,6 +120,17 @@ def local_reader_lines(source, names, class_sites=()):
     return lines, declaration_read
 
 
+def cold_import(project, path, updated, module, timeout):
+    from replay import mirror
+    with TemporaryDirectory(prefix="br-import-") as scratch:
+        root=Path(scratch)
+        mirror(project,root,{path:updated})
+        code="import importlib,sys;sys.path.insert(0,sys.argv[1]);importlib.import_module(sys.argv[2]);from sqlglot.dialects.dialect import Dialect;list(Dialect.classes.values())"
+        run=subprocess.run([sys.executable,"-B","-c",code,str(root),module],cwd=root,
+                           stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=timeout)
+        return run.returncode==0
+
+
 class BindingProfile:
     def __init__(self, data, numbers, project=None):
         self.readers = data["readers"]
@@ -142,22 +153,9 @@ class BindingProfile:
             or self.import_seconds >= 7
         ):
             return False
-        from replay import mirror
-
         start = time.monotonic()
         try:
-            with TemporaryDirectory(prefix="br-import-") as scratch:
-                root = Path(scratch)
-                mirror(self.project, root, {path: updated})
-                code = "import importlib,sys;sys.path.insert(0,sys.argv[1]);importlib.import_module(sys.argv[2]);from sqlglot.dialects.dialect import Dialect;list(Dialect.classes.values())"
-                run = subprocess.run(
-                    [sys.executable, "-B", "-c", code, str(root), module],
-                    cwd=root,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=1.4,
-                )
-                return run.returncode == 0
+            return cold_import(self.project,path,updated,module,1.4)
         except (OSError, ValueError, subprocess.TimeoutExpired):
             return False
         finally:

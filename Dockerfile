@@ -16,3 +16,5 @@ COPY pure_contract.py helper_replay.py helper-inputs.json.gz /app/
 COPY binding_reach.py binding-reads.json.gz /app/
 COPY option_flow.py forward-reads.json.gz /app/
 COPY import_graph.py import-graph.json.gz /app/
+COPY parser_registry.py parser-registry.json.gz /app/
+COPY line_gate.py line-gates.json.gz /app/

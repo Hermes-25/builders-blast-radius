@@ -172,3 +172,27 @@ Four independently constructed changes in Athena, Exasol, Solr and StarRocks wer
 On a 72-patch mixed workload, 12 import changes accounted for 269.972 seconds of the previous 583.933 simulated seconds. This revision reduced the import changes to 229.935 seconds. Total cost including CPU fell from 632.118 to 591.434 seconds in the paired restricted runs. This mixed workload measures scheduling cost. The independent full-suite results above measure failure coverage.
 
 Three public sample runs each retained all 73 failure pairs and scheduled 98.011 seconds. Separate 40- and 60-patch stress runs returned every schedule in 54.038 and 89.282 wall seconds, respectively.
+
+## Conditional statements and parser dictionaries
+
+The selector can narrow scope-preserving statement replacements using entry observations from the original program. The offline profiler records which tests enter each conditional suite, including worker processes. A compact index combines those observations with line coverage for 18,695 eligible lines. At runtime, the original text, indentation, statement kind and assigned names must match. Each change in a multi-file diff must have an applicable dependency record. The selector keeps unprofiled tests, source readers and affected class fixtures. Nested functions, deferred computations and changes that fail to compile use the previous selection. An eligible reduction must save at least half a second of scheduled work.
+
+Parser subclasses can materialize a dispatch dictionary by copying the parent dictionary and overriding a few keys. The offline profiler observes effective dictionaries across dialects and records successful and unsuccessful lookups, membership tests and enumeration. A source audit admits 39 dictionary names. Four admit value changes only because other objects materialize their keys. The selector checks the original parser class and dictionary declaration, and it requires every unaffected entry and spread to preserve its order. A fresh interpreter must then import the patched module and all built-in dialects. Image startup, the unmodified SQLGlot test suite and the separate optimizer, schema and executor suites provide the profiles. Each attempted cold import has a five-second allowance, with twelve seconds shared across the patch batch.
+
+Nine upstream source reversions were evaluated against the complete pinned suite with the organizer's locked dependencies. The candidate retained all 12 observed failing test and patch pairs. The three reversions affecting shared integer division, MySQL constraint names and Snowflake token dispatch took 9.190 simulated seconds together, compared with 69.467 in the preceding entry. Their failing tests alone require 6.735 seconds under the same scheduler.
+
+Across all 65 distinct labeled changes, including the public sample and the independent cohorts, all 2,121 failing test and patch pairs were scheduled. Two further whole-suite checks in that set verified the largest proposed omissions for single predicate changes. On a 43-patch upstream history panel the reverse-order comparison reduced total time including CPU from 717.959 to 659.437 seconds. The same comparison on 72 mixed changes reduced the total from 538.396 to 527.735 seconds. Three runs of the exact release image on the 30 public changes each scheduled 98.011 seconds with zero misses. The median total was 103.923 seconds. The 40-patch CPU stress run finished in 46.459 wall seconds and the 60-patch wall-stall run finished in 86.501 seconds.
+
+The following commands reproduce the new profiles in the same locked environment. `ROOT` points to the unchanged pinned SQLGlot checkout and `CATALOG` to the public `tests.json`.
+
+```sh
+export PYTHONHASHSEED=0 PYTHON_CPU_COUNT=2 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
+python profiling/build_gates.py "$ROOT" gates-full.gz
+python profiling/build_gates.py "$ROOT" gates-workers.gz --tests tests/test_optimizer.py tests/test_executor.py tests/test_schema.py
+python profiling/merge_gates.py gates-full.gz gates-workers.gz "$CATALOG" gates.gz
+python profiling/compile_line_gates.py gates.gz impact-index.json.gz isolated.json.gz line-gates.json.gz
+python profiling/parser_inventory.py "$ROOT" inventory.json
+python profiling/build_parser_keys.py "$ROOT" keys-full.gz
+python profiling/build_parser_keys.py "$ROOT" keys-workers.gz --tests tests/test_optimizer.py tests/test_executor.py tests/test_schema.py
+python profiling/merge_parser_keys.py keys-full.gz keys-workers.gz impact-index.json.gz inventory.json parser-registry.json.gz
+```

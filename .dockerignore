@@ -29,3 +29,7 @@
 !forward-reads.json.gz
 !import_graph.py
 !import-graph.json.gz
+!parser_registry.py
+!parser-registry.json.gz
+!line_gate.py
+!line-gates.json.gz
