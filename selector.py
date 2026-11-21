@@ -475,10 +475,13 @@ def main():
             selector.set_module_profile(json.load(handle))
     durations = {test["number"]: round(test["seconds"] * 1000) for test in tests}
     verifier = None
+    slices = None
     if args.project.is_dir() and not args.static:
         from replay import Verifier
+        from frontier import FrontierVerifier
 
         verifier = Verifier(args.project, tests, assign_workers)
+        slices = FrontierVerifier(args.project, tests, assign_workers)
     emergency_deadline = time.monotonic() + 135
     full_schedule = None
     for patch in sorted((args.data / "commits").glob("*.patch")):
@@ -495,6 +498,8 @@ def main():
         try:
             text = patch.read_text(encoding="utf-8")
             selected = selector.affected(text)
+            if slices:
+                selected = slices.check(selected, text, selector, changes, apply_hunks, function_ranges)
             if verifier:
                 selected = verifier.check(
                     selected, text, selector, changes, apply_hunks
@@ -509,7 +514,7 @@ def main():
                 text,
                 selector,
                 durations,
-                verifier.passed if verifier else (),
+                (verifier.passed | slices.passed) if verifier else (),
                 args.guard,
             )
         print(

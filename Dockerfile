@@ -7,3 +7,6 @@ RUN python -m compileall -q /project/sqlglot /project/tests
 COPY selector.py semantic.py replay.py impact-index.json.gz semantic-index.json.gz source-reads.json.gz isolated.json.gz module-profile.json.gz /app/
 ENV PYTHONDONTWRITEBYTECODE=1
 CMD ["python", "/app/selector.py"]
+COPY frontier.py frontier_child.py frontier_core.py frontier.json.gz memory-profile.json.gz /app/
+COPY fixture-attributes.json /app/
+COPY output_core.py table-outputs.json.gz /app/

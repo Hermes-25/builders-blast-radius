@@ -14,6 +14,14 @@ Replay starts with a 45-second CPU allowance and an 85-second wall deadline for 
 
 For a change to one existing string key's literal value in a class dictionary, the selector can use baseline reads for that key. Operations that can observe every value contribute all their readers. A recorded map mutation or a shared startup read of the changed value disables that refinement. The profiling pass uses tracked dictionaries on the pristine source. Submitted patches execute on the original dictionary implementation.
 
+## Verifying expensive tests
+
+For the executor's TPC-H, TPC-DS and optimized TPC-H methods, the profile records which query reaches an edited line in each processing stage. It distinguishes parsing, optimization, DuckDB SQL generation and the remaining assertions. A patched child recomputes only the affected parts. It compares complete expression graphs, including metadata and parent links, and the actual strings sent to DuckDB. When an expression changes, the child can execute the affected SQLGlot query on the pinned CSV data and compare typed result values, columns and row order. The precomputed output comes from the real SQLGlot test helper on the pristine checkout. The runtime reproduced all 121 baseline results independently.
+
+A changed downstream stage, an unexplained worker read, an unsupported value, a changed database query or a timeout preserves the affected test. The generator memory test runs its relevant dialect subtests in the patched child. For SQL fixture edits, the original fixture reader must materialize the complete replacement. The selector then consults class-attribute reads and the actual input fields consumed by each executor method. Fixture errors retain the full class selection.
+
+The verifier prioritizes cases whose possible scheduled saving exceeds its measured execution cost. Query verification starts within a 40-second CPU and 65-second wall budget for the batch. A per-patch estimate caps the extra table executions. The independent ordinary-test replay still observes its own deadlines. Timings from profiling influence these choices and can vary by machine.
+
 ## Running the entry
 
 Build from this directory. Set `KIT` to the extracted [official starter kit](https://www.joinbuilders.org/buildathon/tracks/blast-radius/files/blast-radius-sample.tar.gz).
@@ -40,12 +48,15 @@ Use the kit's Python 3.13 image and dependency lock plus `coverage==7.17.4` for 
 - `build_index.py` records test lines and file reads, including pool workers. `build_semantic_index.py` records operand categories and class consumers.
 - `profiling/build_options.py` observes literal dialect options. `profiling/merge_options.py` joins those observations to the semantic profile. The submitted indexes combine full-suite runs with a separate worker-aware pass on the optimizer and executor suites.
 - `profiling/profile_reads.py` records source files explicitly read outside the import machinery. `profiling/profile_class_fixtures.py` records reads during class setup. The source-read index includes both datasets. `profiling/build_isolated.py` runs the expensive tests individually and uses the adjacent `sitecustomize.py` to capture startup and child processes.
-- profiling/build_modules.py runs the pristine test files in separate interpreters and merges line events from their child processes. profiling/build_dispatch.py records scalar class-option reads and callback invocation sites. profiling/merge_dispatch.py combines the full-suite and worker-specific observations with direct option reads in test code.
+- `profiling/build_modules.py` runs the pristine test files in separate interpreters and merges line events from their child processes. `profiling/build_dispatch.py` records scalar class-option reads and callback invocation sites. `profiling/merge_dispatch.py` combines the full-suite and worker-specific observations with direct option reads in test code.
+- `profiling/build_mapping.py` records dictionary readers. `profiling/build_frontier.py` traces SQLGlot queries phase by phase. `profiling/build_tables.py` captures the pristine executor results. `profiling/build_memory.py` records each generator dialect and `profiling/build_fixture_attributes.py` observes the complete executor test class.
 - The organizer's starter defines the image digest and command contract. The selector, scheduler and replay implementation are original MIT-licensed code. The regression-selection research that informed the design includes [Gligoric, Eloussi and Marinov](https://users.ece.utexas.edu/~gligoric/papers/GligoricETAL15Ekstazi.pdf) and [Liu and colleagues](https://www.cs.cornell.edu/~legunsen/pubs/LiuETAL23FineRTS.pdf).
 
 The following commands regenerate the local data files. The callback profiles were generated with PYTHON_CPU_COUNT=2, OPENBLAS_NUM_THREADS=1, OMP_NUM_THREADS=1 and NUMEXPR_MAX_THREADS=1. A second run of the submitted profiling code produced the same complete compressed semantic index. Place the runtime indexes at the repository root when building the image.
 
 ```sh
+export SQLGLOT_CHECKOUT="$SQLGLOT" PYTHONHASHSEED=0 PYTHON_CPU_COUNT=2
+export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 NUMEXPR_MAX_THREADS=1
 python build_index.py "$SQLGLOT" impact-index.json.gz
 python build_semantic_index.py "$SQLGLOT" base-semantic.gz
 python build_semantic_index.py "$SQLGLOT" worker-semantic.gz --tests tests/test_optimizer.py tests/test_executor.py
@@ -63,20 +74,26 @@ python profiling/merge_dispatch.py base-dispatch.gz worker-dispatch.gz impact-in
 python profiling/build_mapping.py "$SQLGLOT" full-mapping.gz
 python profiling/build_mapping.py "$SQLGLOT" worker-mapping.gz --tests tests/test_optimizer.py tests/test_executor.py
 python profiling/merge_mapping.py full-mapping.gz worker-mapping.gz dispatch-semantic.gz semantic-index.json.gz
+BLAST_PROFILE_OUT="$PWD/frontier.json.gz" python profiling/build_frontier.py
+BLAST_PROFILE_OUT="$PWD/memory-profile.json.gz" python profiling/build_memory.py
+BLAST_PROFILE_OUT="$PWD/fixture-attributes.json" python profiling/build_fixture_attributes.py
+BLAST_PROFILE_OUT="$PWD/table-outputs.json.gz" python profiling/build_tables.py
 ```
 
 ## Measured performance
 
-The official 30 public patches produced identical schedules on three local Linux runs under the scoring container limits. This entry scheduled 107.487 simulated seconds, missed zero commits and had a median total of 113.278 seconds including parent and child CPU. The preceding replay entry measured 115.976 simulated seconds and 121.337 median total on the same host.
+The organizer's scorer reported zero missed commits on all three runs of the 30-patch public set. Each run scheduled 98.011 seconds. Median total time was 102.565 seconds including parent and child CPU under the official two-CPU, four-GB container limits. The same scheduling algorithm supplied with the actual public failures needs 94.351 simulated seconds.
 
-A separate 72-patch mixed workload contained changes to conditions, settings, imports, fixtures, comments and multiple files. The preceding entry scheduled 834.435 seconds and this one scheduled 659.925 seconds. This comparison measures scheduling cost. Only the independently exercised subsets have failure labels.
+The table compares this entry with its preceding selector. Each independently labelled row lists failures counted as test and patch pairs. A single test can fail on multiple patches.
 
-Six new callback changes were tested against their associated dialect suites and the shared dialect suite. Both versions included all eight observed failing test/patch pairs. The scheduled cost fell from 117.813 to 18.131 seconds. Seven more setting changes retained all eleven observed failing pairs on their related suites, with scheduled cost falling from 141.353 to 39.751 seconds.
+| Local workload | Previous scheduled seconds | This entry | Observed failures retained |
+| --- | ---: | ---: | --- |
+| 12 changes in widely used parser and optimizer code | 318.924 | 209.475 | 6 of 6 across 36 full TPC-method executions |
+| 4 shared fixture edits | 101.816 | 63.760 | 63 of 63 from complete suite runs |
+| 5 mixed code and fixture edits | 34.425 | 16.227 | 8 of 8 from complete suite runs |
+| 6 import and class edits | 68.598 | 62.996 | 240 of 240 from complete suite runs |
+| 72 mixed changes | 659.925 | 617.921 | All 5 newly omitted expensive test methods passed when executed independently on their respective patches |
 
-The forty-patch CPU stress batch used 46.378 CPU seconds and 47.142 wall seconds. The sixty-patch wall-stall batch used 8.254 CPU seconds and 87.219 wall seconds.
+On the 12 parser and optimizer changes, measured selector CPU rose from 6.447 to 22.853 seconds. The reduction including CPU was 93.043 seconds. On the 72 mixed changes, CPU fell from 19.085 to 17.427 seconds, a 43.662-second reduction including CPU. The 72-patch batch has no complete failure labels. All nonpublic workloads are locally constructed mutations.
 
-Six further import and class-setting mutations were each exercised against the complete pinned suite. The two selectors scheduled every one of the 240 failing test/patch pairs. The earlier entry used 125.076 simulated seconds and 127.050 total seconds. This entry used 68.598 simulated seconds and 70.992 total seconds.
-
-The dictionary reader refinement reduced the 30-patch public schedule from 107.487 to 98.011 seconds with zero misses. Eight new SQL dialect dictionary changes were run against their associated dialect suite and the shared dialect suite. Scheduled work fell from 90.614 to 14.818 seconds, retaining all observed failing test/patch pairs.
-
-Three final public-image runs had zero missed commits. They scheduled 98.011, 98.011 and 100.666 seconds respectively, with a median total of 104.118 seconds including measured CPU. Replay deadlines can retain additional tests under load. Four of the new dictionary mutations were also run against the complete pinned suite. Both failing test/patch pairs were scheduled, and the full-suite holdout total was 7.455 seconds.
+A 40-patch CPU stress batch used 46.554 CPU seconds and 46.738 wall seconds. A 60-patch workload containing stalled probes used 13.340 CPU seconds and 92.820 wall seconds. Both completed in a single-CPU container with a read-only root, a 64 MB temporary filesystem, no network, and a non-root user.

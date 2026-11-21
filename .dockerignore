@@ -9,3 +9,11 @@
 !isolated.json.gz
 !module-profile.json.gz
 !pytz-2026.6-py2.py3-none-any.whl
+!frontier.py
+!frontier_child.py
+!frontier_core.py
+!frontier.json.gz
+!memory-profile.json.gz
+!fixture-attributes.json
+!output_core.py
+!table-outputs.json.gz
