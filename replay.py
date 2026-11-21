@@ -16,6 +16,16 @@ import time
 import unittest
 
 
+def safe_fixture(path):
+    candidate = Path(path)
+    return (
+        path.startswith("tests/fixtures/")
+        and path.endswith(".sql")
+        and ".." not in candidate.parts
+        and not candidate.is_absolute()
+    )
+
+
 def mirror(base, dest, replacements):
     """Share unchanged files with the image while giving each mutation a fresh tree."""
     dest.mkdir(exist_ok=True)
@@ -218,7 +228,7 @@ def replay(base, replacements, tests, cpu_budget, deadline, safe_hot):
                 os.setsid()
                 signal.signal(signal.SIGPROF, signal.SIG_DFL)
                 signal.setitimer(signal.ITIMER_PROF, cpu_budget)
-                if install_in_child(base, root, replacements, safe_hot):
+                if safe_hot is not None and install_in_child(base, root, replacements, safe_hot):
                     run_cases(root, write_fd, tests)
                 plan = root / "replay-plan.json"
                 plan.write_text(json.dumps(tests), encoding="utf-8")
@@ -314,20 +324,30 @@ class Verifier:
 
     def check(self, selected, patch, selector, parse_changes, apply_hunks):
         self.passed = set()
-        if cpu_used() - self.cpu_start >= 45 or time.monotonic() > self.deadline - 1:
+        if (
+            not selected
+            or cpu_used() - self.cpu_start >= 45
+            or time.monotonic() > self.deadline - 1
+        ):
             return selected
         try:
             sections = parse_changes(patch)
-            if not sections or any(
-                path not in selector.sources or not path.endswith(".py")
-                for path, _ in sections
+            if not sections or not any(
+                path in selector.sources for path, _ in sections
             ):
                 return selected
-            replacements = {
-                path: apply_hunks(selector.sources[path], hunks)
-                for path, hunks in sections
-            }
-        except (SyntaxError, ValueError, KeyError):
+            replacements = {}
+            fixture = False
+            for path, hunks in sections:
+                if path in selector.sources and path.endswith(".py"):
+                    original = selector.sources[path]
+                elif safe_fixture(path):
+                    fixture = True
+                    original = (self.root / path).read_text(encoding="utf8")
+                else:
+                    return selected
+                replacements[path] = apply_hunks(original, hunks)
+        except (SyntaxError, ValueError, KeyError, OSError, UnicodeError):
             return selected
         group, gain = candidates(selected, self.durations, self.tests, self.schedule)
         if not group:
@@ -366,6 +386,8 @@ class Verifier:
 
         safe_hot = set()
         for path, updated in replacements.items():
+            if path not in selector.sources:
+                continue
             original = selector.sources[path]
             if len(original.splitlines()) != len(updated.splitlines()):
                 continue
@@ -393,7 +415,7 @@ class Verifier:
                 [self.tests[n] for n in requested],
                 allowance,
                 min(self.deadline, time.monotonic() + min(10, 1 + 2.4 * allowance)),
-                safe_hot,
+                None if fixture else safe_hot,
             )
         except (OSError, ValueError):
             return selected

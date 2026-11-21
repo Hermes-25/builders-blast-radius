@@ -48,6 +48,12 @@ def same_equality(types, site):
     return lhs <= {"identity", "None"} and rhs <= {"identity", "None"}
 
 
+@lru_cache(maxsize=12)
+def source_difference(original, updated):
+    """Share a single syntax comparison across selection and both replay checks."""
+    return only_difference(parsed(original), parsed(updated))
+
+
 def literal_call(node):
     if not isinstance(node.func, ast.Name) or any(
         kw.arg is None for kw in node.keywords
@@ -198,7 +204,7 @@ class SemanticProfile:
 
     def selection(self, path, original, updated, sources):
         old, new = parsed(original), parsed(updated)
-        differences = only_difference(old, new)
+        differences = source_difference(original, updated)
         if not differences:
             return set()
         first, replacement = differences[0]
@@ -289,7 +295,7 @@ class SemanticProfile:
 
 def statement_span(original, updated):
     """Return the old executable statement containing a scope-preserving change."""
-    diff = only_difference(parsed(original), parsed(updated))
+    diff = source_difference(original, updated)
     if not diff or not any(
         isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) for n, _ in diff
     ):

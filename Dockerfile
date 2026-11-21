@@ -10,3 +10,5 @@ CMD ["python", "/app/selector.py"]
 COPY frontier.py frontier_child.py frontier_core.py frontier.json.gz memory-profile.json.gz /app/
 COPY fixture-attributes.json /app/
 COPY output_core.py table-outputs.json.gz /app/
+COPY fixture_fields.py /app/
+COPY operand_values.py operand-values.json.gz /app/

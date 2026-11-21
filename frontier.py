@@ -4,7 +4,7 @@ import gzip, json, os, signal, subprocess, sys, time
 from itertools import combinations
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from replay import cpu_used, mirror, schedule_cost
+from replay import cpu_used, mirror, schedule_cost, safe_fixture
 from semantic import statement_span
 
 
@@ -91,11 +91,41 @@ class FrontierVerifier:
 
     def check(self, selected, text, selector, parse, apply, functions):
         self.passed = set()
+        stable = {}
         try:
             sections = parse(text)
             if len(sections) == 1 and sections[0][0] in self.fixture_attributes:
                 return self.fixture_check(selected, sections[0], selector, apply)
-        except (ValueError, UnicodeError):
+            fixture = [
+                section for section in sections if section[0] in self.fixture_attributes
+            ]
+            if (
+                len(fixture) == 1
+                and len(sections) <= 5
+                and all(
+                    p == fixture[0][0]
+                    or p.startswith("sqlglot/")
+                    and p in selector.sources
+                    for p, _ in sections
+                )
+            ):
+                path, hunks = fixture[0]
+                parts = text.split("diff --git ")
+                if len(parts) == len(sections) + 1:
+                    invariant = self.unchanged_fixture_inputs(
+                        path, hunks, selector, apply
+                    )
+                    if invariant:
+                        stable[path] = invariant
+                        library = "".join(
+                            "diff --git " + part
+                            for (other, _), part in zip(sections, parts[1:])
+                            if other != path
+                        )
+                        code_risk = selector.affected(library)
+                        self.passed.update((selected & invariant) - code_risk)
+                        selected = selected - self.passed
+        except (OSError, ValueError, UnicodeError, IndexError, KeyError):
             return selected
         impacted = self.tags.keys() & selected & selector.isolated.keys()
         if (
@@ -109,8 +139,15 @@ class FrontierVerifier:
             return selected
         spans = {}
         changed = {}
+        fixture_paths = set()
         try:
             for path, hunks in parse(text):
+                if safe_fixture(path):
+                    fixture_paths.add(path)
+                    changed[path] = apply(
+                        (self.root / path).read_text(encoding="utf8"), hunks
+                    )
+                    continue
                 if path not in selector.sources or not path.startswith("sqlglot/"):
                     return selected
                 original = selector.sources[path]
@@ -122,9 +159,21 @@ class FrontierVerifier:
                     if part and ranges[0][0] <= part[0] <= part[1] <= ranges[0][1]:
                         ranges = [part]
                 spans[path] = ranges
-        except (SyntaxError, ValueError, KeyError):
+        except (SyntaxError, ValueError, KeyError, OSError, UnicodeError):
+            return selected
+        if not spans:
             return selected
         blocked = set().union(*(selector.source_readers.get(p, set()) for p in changed))
+        for n in impacted:
+            for path in fixture_paths:
+                if n in stable.get(path, ()):
+                    continue
+                if (
+                    path in selector.isolated[n]["opened"]
+                    or n in selector.class_fixtures.get(path, ())
+                    or n in selector.numbers_for(selector.reads.get(path, ()))
+                ):
+                    blocked.add(n)
         options = {}
         prices = {}
         for n in impacted - blocked:
@@ -216,6 +265,47 @@ class FrontierVerifier:
             )
         return selected - self.passed
 
+    def unchanged_fixture_inputs(self, path, hunks, selector, apply):
+        """Find methods given identical data even when production code is changed."""
+        if str(self.root) not in sys.path:
+            sys.path.insert(0, str(self.root))
+        from tests.helpers import load_sql_fixture_pairs
+
+        target = self.root / path
+        updated = apply(target.read_text(encoding="utf8"), hunks)
+        with TemporaryDirectory(prefix="br-combined-") as tmp:
+            newfile = Path(tmp) / "input.sql"
+            newfile.write_text(updated, encoding="utf8")
+            original = list(load_sql_fixture_pairs(str(target)))
+            changed = list(load_sql_fixture_pairs(str(newfile)))
+        if len(original) != len(changed) or any(
+            a[1] != b[1] for a, b in zip(original, changed)
+        ):
+            return set()
+        info = self.fixture_attributes[path]
+        protected = set(info["readers"]) | set(info["direct"])
+        same = {
+            n
+            for test, n in selector.numbers.items()
+            if test.startswith(info["owner"]) and test not in protected
+        }
+        for test in info["readers"]:
+            n = selector.numbers.get(test)
+            if n is None or test in info["direct"]:
+                continue
+            tag = self.tags.get(n)
+            if tag in ("execute_tpch", "execute_tpcds"):
+                if all(
+                    bool(a[0].get("execute")) == bool(b[0].get("execute"))
+                    for a, b in zip(original, changed)
+                ):
+                    same.add(n)
+            elif tag == "optimized_tpch" and all(
+                a[2] == b[2] for a, b in zip(original, changed)
+            ):
+                same.add(n)
+        return same
+
     def fixture_check(self, selected, section, selector, apply):
         path, hunks = section
         target = self.root / path
@@ -237,7 +327,9 @@ class FrontierVerifier:
         class_tests = {
             n for key, n in selector.numbers.items() if key.startswith(info["owner"])
         }
-        direct = selector.numbers_for(selector.reads.get(path, ()))
+        # Class fixture setup is materialized successfully above. Keep any
+        # method that directly reopens the fixture during its own test call.
+        direct = {selector.numbers[k] for k in info["direct"] if k in selector.numbers}
         readers = {
             selector.numbers[k] for k in info["readers"] if k in selector.numbers
         }
@@ -255,4 +347,56 @@ class FrontierVerifier:
                 ):
                     readers.discard(number)
         self.passed = (selected & class_tests) - direct - readers
+        family = "ds" if info["attr"] == "tpcds_sqls" else "h"
+        named = {self.tags[n]: n for n in readers if n in self.tags}
+        opt = selector.numbers.get(
+            "tests/test_optimizer.py::TestOptimizer::test_tpc" + family
+        )
+        if opt in selected:
+            named["optimizer_tpc" + family] = opt
+        named = {name: n for name, n in named.items() if n in selected}
+        if before == after:
+            self.passed.update(named.values())
+            return selected - self.passed
+        available = min(
+            3.0, 65 + self.start - time.monotonic(), 40 - (cpu_used() - self.cpu)
+        )
+        if not named or available < 0.4 or len(before) != len(after):
+            return selected - self.passed
+        try:
+            with TemporaryDirectory(prefix="br-fields-") as temp:
+                req = Path(temp) / "request"
+                out = Path(temp) / "verdict"
+                req.write_text(json.dumps([family, before, after, list(named)]))
+                process = subprocess.Popen(
+                    [
+                        sys.executable,
+                        "-B",
+                        str(Path(__file__).with_name("fixture_fields.py")),
+                        str(self.root),
+                        str(req),
+                        str(out),
+                    ],
+                    env=os.environ
+                    | {"PYTHONHASHSEED": "0", "PYTHONDONTWRITEBYTECODE": "1"},
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+                try:
+                    process.wait(timeout=available)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    process.wait()
+                if out.exists():
+                    self.passed.update(
+                        named[tag]
+                        for tag in out.read_text().splitlines()
+                        if tag in named
+                    )
+        except (OSError, ValueError):
+            pass
         return selected - self.passed

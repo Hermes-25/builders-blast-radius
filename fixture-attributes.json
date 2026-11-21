@@ -1,6 +1,7 @@
 {
   "tests/fixtures/optimizer/tpc-ds/tpc-ds.sql": {
     "attr": "tpcds_sqls",
+    "direct": [],
     "owner": "tests/test_executor.py::TestExecutor::",
     "readers": [
       "tests/test_executor.py::TestExecutor::test_execute_tpcds"
@@ -8,6 +9,7 @@
   },
   "tests/fixtures/optimizer/tpc-h/tpc-h.sql": {
     "attr": "tpch_sqls",
+    "direct": [],
     "owner": "tests/test_executor.py::TestExecutor::",
     "readers": [
       "tests/test_executor.py::TestExecutor::test_execute_tpch",

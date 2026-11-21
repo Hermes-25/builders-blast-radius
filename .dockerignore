@@ -17,3 +17,6 @@
 !fixture-attributes.json
 !output_core.py
 !table-outputs.json.gz
+!fixture_fields.py
+!operand_values.py
+!operand-values.json.gz

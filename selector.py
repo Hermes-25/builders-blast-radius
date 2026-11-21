@@ -163,6 +163,7 @@ class Selector:
             for path, names in (source_reads or {}).get("class_fixtures", {}).items()
         }
         self.isolated = {}
+        self.values = None
         self.module_lines = {}
         self.module_groups = []
         self.module_unknown = set()
@@ -253,6 +254,22 @@ class Selector:
         selected = set()
         try:
             sections = changes(patch)
+            if (
+                1 < len(sections) <= 6
+                and len({p for p, _ in sections}) == len(sections)
+                and sum(p in self.sources for p, _ in sections) == 1
+                and all(
+                    p in self.sources or p.startswith("tests/fixtures/") and p.endswith(".sql")
+                    for p, _ in sections
+                )
+            ):
+                # A changed callee can invalidate a caller-specific proof. Keep
+                # broad selection across multiple production files. Fixture reads
+                # can be combined with one production file, followed by replay of
+                # the complete patched tree.
+                parts = re.split(r"(?m)^diff --git ", patch)[1:]
+                if len(parts) == len(sections):
+                    return set().union(*(self.affected("diff --git " + entry) for entry in parts))
             for path, hunks in sections:
                 readers = self.numbers_for(self.reads.get(path, ()))
                 if self.source_readers is not None and path in self.sources:
@@ -343,6 +360,25 @@ class Selector:
                             selected.add(number)
         except (ValueError, SyntaxError, RecursionError):
             return self.all_numbers
+        if self.values is not None and len(sections) == 1 and selected:
+            path, hunks = sections[0]
+            if (
+                path in self.sources
+                and path.startswith("sqlglot/")
+                and path.endswith(".py")
+            ):
+                source = self.sources[path]
+                try:
+                    observed = self.values.selection(path, source, updated, self)
+                    if observed is not None:
+                        preserved = (
+                            set(self.source_readers.get(path, ())) | self.untraced_reads
+                        )
+                        preserved.update(self.by_file.get(path, ()))
+                        preserved.update(self.class_fixtures.get(path, ()))
+                        selected.intersection_update(observed | preserved)
+                except (ValueError, SyntaxError, RecursionError):
+                    pass
         return selected
 
 
@@ -473,6 +509,11 @@ def main():
     if module_path.exists():
         with gzip.open(module_path, "rt", encoding="utf-8") as handle:
             selector.set_module_profile(json.load(handle))
+    value_path = Path(__file__).with_name("operand-values.json.gz")
+    if value_path.exists():
+        from operand_values import ValueProfile
+        with gzip.open(value_path, "rt") as handle:
+            selector.values = ValueProfile(json.load(handle), selector.numbers)
     durations = {test["number"]: round(test["seconds"] * 1000) for test in tests}
     verifier = None
     slices = None

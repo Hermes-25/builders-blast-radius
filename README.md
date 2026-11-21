@@ -22,6 +22,14 @@ A changed downstream stage, an unexplained worker read, an unsupported value, a 
 
 The verifier prioritizes cases whose possible scheduled saving exceeds its measured execution cost. Query verification starts within a 40-second CPU and 65-second wall budget for the batch. A per-patch estimate caps the extra table executions. The independent ordinary-test replay still observes its own deadlines. Timings from profiling influence these choices and can vary by machine.
 
+## Observed operand values and fixture rows
+
+On the unmodified checkout, a separate profiling pass records primitive values at comparisons, the shape and object identity relationships in arguments passed to `seq_get`, and boolean inputs in branch conditions. A second pass covers the optimizer and executor workers independently. The merged profile contains 3,222 source positions from 1,620 passing tests. Runtime code interprets the submitted expression change against these observations. If an operand is unknown, a site ran at startup, or a separately traced expensive test reached a line without a corresponding observation, the selector retains its earlier coverage decision. The observation files contain baseline program values and test IDs. The method draws on [Just and colleagues' work on state infection](https://homes.cs.washington.edu/~mernst/pubs/state-infection-issta2014-abstract.html).
+
+For TPC fixture changes, the selector uses the original fixture reader and replays each changed row through the original optimizer test method. SQL generation, optimizer assertions and worker result types must still agree. For assertions that use a database, unchanged SQL inputs establish that the database receives the same operations as the pristine test. A new or unsupported database operation keeps the test selected. A separate trace of the entire executor class records test-call file reads so class setup does not assign a shared file to whichever test ran first.
+
+When one Python source file and one or more SQL fixtures change, the selector combines source observations with fixture readers. Every replay uses the complete patch. For TPC files, the selector checks which inputs each original executor test receives. A changed title or expected SQL can leave the production query and execution flag identical. Such a test still runs if the production change can affect it. A changed query string, an execution-flag change for a relevant method, an unverified reader, or failed fixture loading keeps the broader decision. A change to two production files also keeps broader coverage, because a change in a callee can invalidate a conclusion drawn about its caller in isolation.
+
 ## Running the entry
 
 Build from this directory. Set `KIT` to the extracted [official starter kit](https://www.joinbuilders.org/buildathon/tracks/blast-radius/files/blast-radius-sample.tar.gz).
@@ -78,22 +86,34 @@ BLAST_PROFILE_OUT="$PWD/frontier.json.gz" python profiling/build_frontier.py
 BLAST_PROFILE_OUT="$PWD/memory-profile.json.gz" python profiling/build_memory.py
 BLAST_PROFILE_OUT="$PWD/fixture-attributes.json" python profiling/build_fixture_attributes.py
 BLAST_PROFILE_OUT="$PWD/table-outputs.json.gz" python profiling/build_tables.py
+BLAST_FIXTURE_INPUT="$PWD/fixture-attributes.json" BLAST_PROFILE_OUT="$PWD/fixture-attributes.json" python profiling/build_fixture_calls.py
+python profiling/build_values.py "$SQLGLOT" values-full.gz
+python profiling/build_values.py "$SQLGLOT" values-workers.gz --tests tests/test_optimizer.py tests/test_executor.py
+python profiling/build_predicates.py "$SQLGLOT" predicates-full.gz
+python profiling/build_predicates.py "$SQLGLOT" predicates-workers.gz --tests tests/test_optimizer.py tests/test_executor.py
+python profiling/merge_values.py values-full.gz values-workers.gz operand-values.json.gz --extra predicates-full.gz predicates-workers.gz
 ```
 
 ## Measured performance
 
-The organizer's scorer reported zero missed commits on all three runs of the 30-patch public set. Each run scheduled 98.011 seconds. Median total time was 102.565 seconds including parent and child CPU under the official two-CPU, four-GB container limits. The same scheduling algorithm supplied with the actual public failures needs 94.351 simulated seconds.
+The preceding official practice revision scored 288.0 seconds with zero missed commits on three runs. The public sample, locally generated holdouts and hidden practice batch contain different patches.
 
-The table compares this entry with its preceding selector. Each independently labelled row lists failures counted as test and patch pairs. A single test can fail on multiple patches.
+Three local runs under the official two-CPU limits each scheduled 98.011 seconds and missed zero of the 30 public commits. Median total time including selector CPU was 106.234 seconds. Running the same scheduler on only the public failing IDs costs 94.351 simulated seconds.
 
-| Local workload | Previous scheduled seconds | This entry | Observed failures retained |
+| Local workload | Preceding official revision, scheduled seconds | This entry, scheduled seconds | Observed failing test/patch pairs retained |
 | --- | ---: | ---: | --- |
-| 12 changes in widely used parser and optimizer code | 318.924 | 209.475 | 6 of 6 across 36 full TPC-method executions |
-| 4 shared fixture edits | 101.816 | 63.760 | 63 of 63 from complete suite runs |
-| 5 mixed code and fixture edits | 34.425 | 16.227 | 8 of 8 from complete suite runs |
-| 6 import and class edits | 68.598 | 62.996 | 240 of 240 from complete suite runs |
-| 72 mixed changes | 659.925 | 617.921 | All 5 newly omitted expensive test methods passed when executed independently on their respective patches |
+| 8 scalar, branch and index edits | 57.717 | 28.804 | 40 of 40, complete pinned suite |
+| 6 additional branch and comparison edits | 40.737 | 29.534 | 5 of 5, complete pinned suite |
+| 6 multi-file edits including an interacting caller and callee | 150.880 | 93.509 | 178 of 178, complete pinned suite |
+| 5 independently combined source and TPC fixture edits | 130.955 | 87.656 | 19 of 19, complete pinned suite |
+| 4 shared fixture edits | 63.760 | 35.578 | 63 of 63, complete pinned suite |
+| 9 additional TPC fixture edits | 135.211 | 38.411 | 7 of 7, original executor and optimizer methods |
+| 3 duplicate or invalid TPC query pairs | 26.703 | 19.647 | 3 of 3, original executor and optimizer methods |
 
-On the 12 parser and optimizer changes, measured selector CPU rose from 6.447 to 22.853 seconds. The reduction including CPU was 93.043 seconds. On the 72 mixed changes, CPU fell from 19.085 to 17.427 seconds, a 43.662-second reduction including CPU. The 72-patch batch has no complete failure labels. All nonpublic workloads are locally constructed mutations.
+Five earlier mixed edits and six structural mutations also retained all 248 failures from complete suite runs. The six multi-file edits above cost 152.132 seconds for the preceding official revision and 98.388 seconds for this entry, including measured CPU. The jointly changed caller and callee remained the costliest selection there. Its schedule cost 36.817 seconds against 6.633 seconds using only its known failures.
 
-A 40-patch CPU stress batch used 46.554 CPU seconds and 46.738 wall seconds. A 60-patch workload containing stalled probes used 13.340 CPU seconds and 92.820 wall seconds. Both completed in a single-CPU container with a read-only root, a 64 MB temporary filesystem, no network, and a non-root user.
+Across three alternating runs on a separate 72-patch mixed workload, median total time including CPU fell from 647.120 to 615.686 seconds. Median scheduled time fell from 617.921 to 590.096. Only two patches changed the selected IDs. Complete original-suite runs confirmed that all 2,814 newly omitted test/patch pairs passed. The entire 72-patch set has partial failure labels.
+
+On 12 mutations targeting widely shared TPC code, three alternating runs produced median totals of 232.894 seconds for the preceding official revision and 213.702 for this one. All six failures observed over 36 original TPC-method executions were retained. Selector runtimes and probe deadlines can vary under load.
+
+A 40-patch CPU stress batch returned every schedule in 51.561 wall seconds using 50.520 CPU seconds. The 60-patch wall-stall batch returned every schedule in 90.585 wall seconds using 9.093 CPU seconds. Both used a one-CPU container with a read-only root, 64 MB of temporary storage, a non-root user and networking disabled.
