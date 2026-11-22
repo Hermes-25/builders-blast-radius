@@ -91,6 +91,7 @@ class FrontierVerifier:
 
     def check(self, selected, text, selector, parse, apply, functions):
         self.passed = set()
+        self.attempted = set()
         stable = {}
         try:
             sections = parse(text)
@@ -239,6 +240,7 @@ class FrontierVerifier:
                     stderr=subprocess.DEVNULL,
                     start_new_session=True,
                 )
+                self.attempted.update(chosen)
                 try:
                     process.wait(timeout=timeout)
                 except subprocess.TimeoutExpired:

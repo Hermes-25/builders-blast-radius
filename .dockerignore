@@ -33,3 +33,8 @@
 !parser-registry.json.gz
 !line_gate.py
 !line-gates.json.gz
+!optimizer_checkpoint.py
+!optimizer_result.py
+!optimizer-packets.zip
+!syntax-reference.json.gz
+!private_helper.py

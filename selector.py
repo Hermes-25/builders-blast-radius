@@ -3,11 +3,15 @@
 import argparse
 import ast
 from collections import defaultdict
+from functools import lru_cache
 import gzip
+import hashlib
 import json
 import marshal
 from pathlib import Path
 import re
+import subprocess
+import sys
 import time
 
 from semantic import SemanticProfile, statement_span, parsed
@@ -108,19 +112,36 @@ class FunctionBodies(ast.NodeTransformer):
         return node
 
 
+REFERENCE_SHAPES = {}
+REFERENCE_CODE = {}
+
+
+@lru_cache(maxsize=28)
+def function_shape(source):
+    known=REFERENCE_SHAPES.get(source)
+    if known is not None:
+        return known
+    funcs=FunctionBodies()
+    tree=funcs.visit(ast.parse(source,type_comments=True))
+    declaration=hashlib.sha256(ast.dump(tree).encode()).hexdigest()
+    rows=tuple((start,end,hashlib.sha256('\0'.join(body).encode()).hexdigest())
+               for start,end,body in funcs.bodies)
+    return declaration,rows
+
+
+def code_hash(source,path):
+    return hashlib.sha256(marshal.dumps(compile(source,path,'exec',dont_inherit=True))).hexdigest()
+
+
 def function_ranges(original, updated):
-    old_tree = ast.parse(original, type_comments=True)
-    new_tree = ast.parse(updated, type_comments=True)
-    if ast.dump(old_tree) == ast.dump(new_tree):
-        return []
-    old_bodies = FunctionBodies()
-    new_bodies = FunctionBodies()
-    if ast.dump(old_bodies.visit(old_tree)) != ast.dump(new_bodies.visit(new_tree)):
+    old_shape,old_bodies=function_shape(original)
+    new_shape,new_bodies=function_shape(updated)
+    if old_shape!=new_shape:
         return None
     return [
         (start, end)
         for (start, end, old), (_, _, new) in zip(
-            old_bodies.bodies, new_bodies.bodies, strict=True
+            old_bodies, new_bodies, strict=True
         )
         if old != new
     ]
@@ -316,9 +337,8 @@ class Selector:
                 # Compilation also catches illegal scope/control-flow edits that
                 # pass the AST parser. Identical bytecode and metadata cover
                 # harmless changes folded by Python's compiler.
-                baseline = compile(source, path, "exec", dont_inherit=True)
-                candidate = compile(updated, path, "exec", dont_inherit=True)
-                if marshal.dumps(baseline) == marshal.dumps(candidate):
+                baseline = REFERENCE_CODE.get((path, source)) or code_hash(source, path)
+                if baseline == code_hash(updated, path):
                     continue
                 if (self.parser_registry is not None and len(sections)==1 and path.startswith("sqlglot/parsers/")
                     and any(re.match(r"""[-+]\s+(?:"[^"]+"|'[^']+'|TokenType\.\w+)\s*:""",line)
@@ -614,13 +634,27 @@ def main():
         from import_graph import ImportGraph
         with gzip.open(graph_path, "rt") as handle:
             selector.import_graph = ImportGraph(json.load(handle), tests, args.project)
+    reference_path=Path(__file__).with_name('syntax-reference.json.gz')
+    if reference_path.is_file():
+        with gzip.open(reference_path,'rt') as handle:
+            reference=json.load(handle)
+        if reference['runtime']==[sys.implementation.cache_tag,sys.hexversion,sys.flags.optimize]:
+            for path,(digest,code,shape,functions) in reference['files'].items():
+                source=selector.sources.get(path)
+                if source is not None and hashlib.sha256(source.encode()).hexdigest()==digest:
+                    REFERENCE_CODE[path,source]=code
+                    REFERENCE_SHAPES[source]=shape,functions
     slices = None
+    optimizer_checkpoint = None
     if args.project.is_dir() and not args.static:
         from replay import Verifier
         from frontier import FrontierVerifier
+        from optimizer_checkpoint import OptimizerCheckpoint
+        from private_helper import verify as verify_private_helper
 
         verifier = Verifier(args.project, tests, assign_workers)
         slices = FrontierVerifier(args.project, tests, assign_workers)
+        optimizer_checkpoint = OptimizerCheckpoint(args.project, tests, durations, assign_workers, slices.records['execute_tpcds'])
     emergency_deadline = time.monotonic() + 135
     full_schedule = None
     for patch in sorted((args.data / "commits").glob("*.patch")):
@@ -663,6 +697,21 @@ def main():
                          and text.count("diff --git ") == 1)
             if slices and not confirmed:
                 selected = slices.check(selected, text, selector, changes, apply_hunks, function_ranges)
+                if 'def _' in text:
+                    try:
+                        private_case=verify_private_helper(text,selected,selector,changes,apply_hunks,FunctionBodies,args.project)
+                        if private_case is not None:
+                            selected=selected-{private_case}
+                            slices.passed.add(private_case)
+                    except (OSError,ValueError,KeyError,TypeError,SyntaxError,RecursionError,subprocess.TimeoutExpired):
+                        pass
+                if optimizer_checkpoint.target not in slices.attempted and 'sqlglot/optimizer/' in text:
+                    try:
+                        if optimizer_checkpoint.check(selected, text, selector, changes, apply_hunks, function_ranges):
+                            selected = selected - {optimizer_checkpoint.target}
+                            slices.passed.add(optimizer_checkpoint.target)
+                    except (ValueError, KeyError, TypeError, SyntaxError, OSError, RecursionError):
+                        pass
             if verifier and not confirmed:
                 selected = verifier.check(
                     selected, text, selector, changes, apply_hunks

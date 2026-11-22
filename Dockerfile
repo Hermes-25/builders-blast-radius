@@ -18,3 +18,6 @@ COPY option_flow.py forward-reads.json.gz /app/
 COPY import_graph.py import-graph.json.gz /app/
 COPY parser_registry.py parser-registry.json.gz /app/
 COPY line_gate.py line-gates.json.gz /app/
+COPY optimizer_checkpoint.py optimizer_result.py optimizer-packets.zip /app/
+COPY syntax-reference.json.gz /app/
+COPY private_helper.py /app/

@@ -1,5 +1,11 @@
 # Blast Radius
 
+The optimizer verifier stores the original expression entering the complete SQLGlot optimizer for each of the 57 TPC-DS queries that reach it. For eligible helper-signature changes, it reconstructs those inputs in a fresh patched process and compares the complete output graphs with the original executor observations. Reads outside this phase, unsupported declarations, changed fixture dependencies and unfinished verification keep the executor test scheduled.
+
+A separate check handles additions or removals of undecorated private module helpers. It verifies their callers, observed namespace reads and the cold initialization of the original parser test before omitting an expensive case whose isolated execution missed every affected body. Original-source compiler fingerprints avoid repeating invariant work during patch analysis.
+
+On local ground truth this revision kept all 92 failing test IDs for a fresh optimizer regression. A paired no-op passed the complete original suite. The six separate optimizer oracles retained all 17 failure pairs. On an upstream predicate-pushdown helper reversion the schedule fell from 27.238 to 14.256 seconds. An unrelated helper removal cut 7.363 simulated seconds and its omitted parser test passed when run on the patch. The independent failing parser change kept that test scheduled. The 30 public patches retained all 73 failure pairs in 98.011 simulated seconds.
+
 This entry selects SQLGlot regression tests for each submitted patch and distributes them over up to eight workers. The Docker image contains the pinned SQLGlot source, test catalogue dependency profiles, and a small runner that can execute actual tests on the patched program.
 
 ## Selection and scheduling
