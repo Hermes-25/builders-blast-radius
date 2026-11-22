@@ -22,3 +22,4 @@ COPY optimizer_checkpoint.py optimizer_result.py optimizer-packets.zip /app/
 COPY syntax-reference.json.gz /app/
 COPY private_helper.py /app/
 COPY composite.py /app/
+COPY schema_checks.py schema-checks.json.gz /app/

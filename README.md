@@ -1,5 +1,9 @@
 # Blast Radius
 
+A separate baseline records when each SQLGlot expression failed to provide a particular field during validation. For edits that flip one existing boolean in an expression's `arg_types`, a changed validation outcome requires a missing or empty value. The selector also keeps tests that inspected the metadata directly or saw multiple absent required fields, where message order can change. The profile follows inherited schemas and worker processes. A startup-wide dependency keeps the original selection. The implementation follows the pinned [`Expression.error_messages`](https://github.com/tobymao/sqlglot/blob/eb11aec4be8cb2122afe713a4816662c3f0fb2fa/sqlglot/expressions/core.py#L1314-L1342).
+
+The baseline passed all 1,620 original tests and a separate 227-test worker pass. Making `Substring.length` required failed nine test IDs in an independent full-suite run. The schema rule predicted exactly those nine. Making `IntervalSpan.expression` optional passed the complete original suite. The two patches together cost 4.807 scheduled seconds, down from 25.454 for the published compound selector. These are local comparisons on newly written patches. The 30-patch public sample retained all 73 failing test IDs.
+
 For a patch that edits class defaults and function bodies together, the selector combines the tests that read each changed default with the tests that executed each changed body. The original and patched modules must have the same remaining declarations. It uses the regular fallback for options read during startup or without a known profile. Source readers and class fixtures remain eligible.
 
 An independent upstream change to `Generator.VARIANCE_NAME` and `variance_sql` failed three BigQuery subtests within one scheduled test ID when tested against the complete original suite. The combined dependency check retained that test. Its eight directly affected cases include inherited option readers. Adding a second class setting in a separate verification retained every observed reader of both settings.
@@ -96,6 +100,9 @@ python profiling/build_isolated.py "$SQLGLOT" "$KIT/sample/tests.json" isolated.
 python profiling/build_modules.py "$SQLGLOT" "$KIT/sample/tests.json" module-profile.json.gz
 python profiling/build_dispatch.py "$SQLGLOT" base-dispatch.gz
 python profiling/build_dispatch.py "$SQLGLOT" worker-dispatch.gz --tests tests/test_optimizer.py tests/test_executor.py
+python profiling/build_schema_checks.py "$SQLGLOT" schema-full.gz
+python profiling/build_schema_checks.py "$SQLGLOT" schema-workers.gz --workers worker-dispatch.gz
+python profiling/merge_schema_checks.py schema-full.gz schema-workers.gz "$KIT/sample/tests.json" schema-checks.json.gz
 python profiling/merge_dispatch.py base-dispatch.gz worker-dispatch.gz impact-index.json.gz option-semantic.gz dispatch-semantic.gz
 python profiling/build_mapping.py "$SQLGLOT" full-mapping.gz
 python profiling/build_mapping.py "$SQLGLOT" worker-mapping.gz --tests tests/test_optimizer.py tests/test_executor.py

@@ -191,6 +191,7 @@ class Selector:
         self.import_graph = None
         self.flow = None
         self.composite = False
+        self.schemas = None
         self.module_lines = {}
         self.module_groups = []
         self.module_unknown = set()
@@ -361,6 +362,11 @@ class Selector:
                         selected.update(precise)
                         continue
                 if self.semantic is not None and len(sections) == 1:
+                    if self.schemas is not None and path.startswith('sqlglot/expressions/'):
+                        checked = self.schemas.selection(path, source, updated, self)
+                        if checked is not None:
+                            selected.update(checked)
+                            continue
                     precise = self.semantic.selection(
                         path, source, updated, self.sources
                     )
@@ -606,6 +612,11 @@ def main():
         with gzip.open(module_path, "rt", encoding="utf-8") as handle:
             selector.set_module_profile(json.load(handle))
     value_path = Path(__file__).with_name("operand-values.json.gz")
+    schema_path = Path(__file__).with_name('schema-checks.json.gz')
+    if schema_path.is_file():
+        from schema_checks import SchemaChecks
+        with gzip.open(schema_path, 'rt') as handle:
+            selector.schemas = SchemaChecks(json.load(handle), selector.numbers)
     if value_path.exists():
         from operand_values import ValueProfile
         with gzip.open(value_path, "rt") as handle:

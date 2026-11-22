@@ -39,3 +39,5 @@
 !syntax-reference.json.gz
 !private_helper.py
 !composite.py
+!schema_checks.py
+!schema-checks.json.gz
