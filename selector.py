@@ -190,6 +190,7 @@ class Selector:
         self.parser_registry = None
         self.import_graph = None
         self.flow = None
+        self.composite = False
         self.module_lines = {}
         self.module_groups = []
         self.module_unknown = set()
@@ -372,6 +373,15 @@ class Selector:
                 file_lines = self.lines.get(path, {})
                 selected.update(self.unprofiled)
                 if ranges is None:
+                    if self.composite and len(sections) == 1:
+                        from composite import selection as composite_selection
+                        try:
+                            risk = composite_selection(path, hunks, source, updated, self, FunctionBodies)
+                            if risk is not None:
+                                selected.update(risk)
+                                continue
+                        except (ValueError, TypeError, KeyError, OSError, SyntaxError, RecursionError):
+                            pass
                     # Globals can be consumed by other modules after import,
                     # without executing a line in their defining file again.
                     path_parts = path.split("/")
@@ -653,6 +663,7 @@ def main():
         from private_helper import verify as verify_private_helper
 
         verifier = Verifier(args.project, tests, assign_workers)
+        selector.composite = True
         slices = FrontierVerifier(args.project, tests, assign_workers)
         optimizer_checkpoint = OptimizerCheckpoint(args.project, tests, durations, assign_workers, slices.records['execute_tpcds'])
     emergency_deadline = time.monotonic() + 135

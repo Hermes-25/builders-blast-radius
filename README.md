@@ -1,5 +1,11 @@
 # Blast Radius
 
+For a patch that edits class defaults and function bodies together, the selector combines the tests that read each changed default with the tests that executed each changed body. The original and patched modules must have the same remaining declarations. It uses the regular fallback for options read during startup or without a known profile. Source readers and class fixtures remain eligible.
+
+An independent upstream change to `Generator.VARIANCE_NAME` and `variance_sql` failed three BigQuery subtests within one scheduled test ID when tested against the complete original suite. The combined dependency check retained that test. Its eight directly affected cases include inherited option readers. Adding a second class setting in a separate verification retained every observed reader of both settings.
+
+For private module helpers, a second check verifies the refactored module and dialect registry in a fresh interpreter, then combines function-body execution with namespace readers. On an upstream scope refactor, the complete suite produced fourteen failed subtests across two test IDs. The selector retained both. On a three-change upstream batch the combined selector scheduled 67.708 seconds, compared with 103.088 for the checkpoint control.
+
 The optimizer verifier stores the original expression entering the complete SQLGlot optimizer for each of the 57 TPC-DS queries that reach it. For eligible helper-signature changes, it reconstructs those inputs in a fresh patched process and compares the complete output graphs with the original executor observations. Reads outside this phase, unsupported declarations, changed fixture dependencies and unfinished verification keep the executor test scheduled.
 
 A separate check handles additions or removals of undecorated private module helpers. It verifies their callers, observed namespace reads and the cold initialization of the original parser test before omitting an expensive case whose isolated execution missed every affected body. Original-source compiler fingerprints avoid repeating invariant work during patch analysis.
